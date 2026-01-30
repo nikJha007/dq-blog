@@ -67,6 +67,33 @@ aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[
 - Wheel: `kafka_python-2.3.0-py2.py3-none-any.whl`
 - Deploy script creates layer and attaches to KafkaAdminFunction post-deploy
 
+### 10. DMS to MSK Security Group Access
+**Error:** `Test connection for replication instance and endpoint target-msk should be successful for starting the replication task`
+
+**Issue:** DMS replication instance needs to connect to MSK on port 9096 for SASL/SCRAM, but the MSKSecurityGroup only allowed VPC CIDR traffic. DMS uses its own security group.
+
+**Fix:** Added explicit security group ingress rules:
+- `MSKSecurityGroupDMSIngress`: Allow DMSSecurityGroup → MSKSecurityGroup on port 9096
+- `RDSSecurityGroupDMSIngress`: Allow DMSSecurityGroup → RDSSecurityGroup on port 5432
+
+### 11. Glue EC2 Permissions
+**Error:** `VPC S3 endpoint validation failed... DescribeVpcEndpoints action is unauthorized`
+
+**Issue:** Glue job needs additional EC2 permissions to validate VPC endpoints.
+
+**Fix:** Added to GlueRole's GlueEC2Access policy:
+- `ec2:DescribeVpcEndpoints`
+- `ec2:DescribeRouteTables`
+- `ec2:DescribeVpcAttribute`
+
+### 12. Lambda KMS Permissions for MSK Secret
+**Error:** Lambda couldn't decrypt MSK secret encrypted with custom KMS key.
+
+**Fix:** Added KMS permissions to LambdaRole:
+- `kms:Decrypt`
+- `kms:GenerateDataKey`
+- Resource: MSKSecretKMSKey ARN
+
 ## Dependency Chain
 ```
 VPC/Networking → RDS → MSK → MSKBootstrapServersResource (Custom Resource) → DMS/Glue/Lambdas
