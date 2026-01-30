@@ -170,12 +170,22 @@ This framework uses **AWS Deequ** for enterprise-grade data quality metrics. The
 | `deequ-2.0.4-spark-3.3.jar` | `s3://<assets-bucket>/libs/` | Deequ JAR for Spark 3.3 |
 | `PyYAML-6.0.1-*.whl` | `s3://<assets-bucket>/libs/` | PyYAML wheel for config parsing (Python 3.10) |
 | `deequ_analyzer.py` | `s3://<assets-bucket>/scripts/` | Deequ analyzer module |
+| `psycopg2-layer.zip` | `s3://<assets-bucket>/layers/` | psycopg2 Lambda layer for SQL Runner |
 
 The Glue job is configured with:
 - `--extra-py-files`: PyYAML wheel, PyDeequ wheel, deequ_analyzer.py
 - `--extra-jars`: Deequ JAR file
 
 **Note:** Deequ is REQUIRED - the job will fail if Deequ libraries aren't available. The `deploy.sh` script handles downloading these automatically.
+
+## psycopg2 Lambda Layer
+
+The SQL Runner Lambda requires psycopg2 to connect to PostgreSQL. Instead of using external public layers (which may have access issues), we create our own layer:
+
+- Pre-downloaded wheel: `src/libs/psycopg2_binary-2.9.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
+- Deploy script creates layer zip and uploads to S3
+- CloudFormation creates the Lambda Layer from S3
+- SQLRunnerFunction uses Python 3.10 runtime to match the wheel
 
 ## Utility Lambdas
 

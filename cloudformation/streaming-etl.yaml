@@ -769,7 +769,7 @@ Resources:
         '--enable-glue-datacatalog': 'true'
         '--enable-continuous-cloudwatch-log': 'true'
         '--CONFIG_PATH': !Sub 's3://${AssetsBucket}/config/tables.yaml'
-        '--extra-py-files': !Sub 's3://${AssetsBucket}/libs/PyYAML-6.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl,s3://${AssetsBucket}/libs/pydeequ-1.2.0-py3-none-any.whl,s3://${AssetsBucket}/scripts/deequ_analyzer.py'
+        '--extra-py-files': !Sub 's3://${AssetsBucket}/libs/PyYAML-6.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl,s3://${AssetsBucket}/libs/pydeequ-1.2.0-py3-none-any.whl,s3://${AssetsBucket}/scripts/deequ_analyzer.py'
         '--extra-jars': !Sub 's3://${AssetsBucket}/libs/deequ-2.0.4-spark-3.3.jar'
         '--datalake-formats': delta
         '--conf': 'spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog'
@@ -781,21 +781,43 @@ Resources:
       NumberOfWorkers: !Ref GlueNumberOfWorkers
 
   # ==========================================================================
+  # Lambda Layers
+  # ==========================================================================
+  
+  # psycopg2 Lambda Layer - PostgreSQL driver for Python
+  Psycopg2Layer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${EnvironmentName}-psycopg2'
+      Description: psycopg2-binary 2.9.9 for Python 3.10
+      Content:
+        S3Bucket: !Ref AssetsBucket
+        S3Key: layers/psycopg2-layer.zip
+      CompatibleRuntimes:
+        - python3.10
+      CompatibleArchitectures:
+        - x86_64
+
+  # ==========================================================================
   # Utility Lambdas
   # ==========================================================================
   
   # SQL Runner Lambda - Execute SQL against RDS PostgreSQL
   SQLRunnerFunction:
     Type: AWS::Lambda::Function
-    DependsOn: RDSInstance
+    DependsOn: 
+      - RDSInstance
+      - Psycopg2Layer
     Properties:
       FunctionName: !Sub '${EnvironmentName}-sql-runner'
       Description: SQL runner utility for RDS PostgreSQL
-      Runtime: python3.11
+      Runtime: python3.10
       Handler: sql_runner_lambda.lambda_handler
       Role: !GetAtt LambdaRole.Arn
       Timeout: 60
       MemorySize: 256
+      Layers:
+        - !Ref Psycopg2Layer
       Code:
         S3Bucket: !Ref AssetsBucket
         S3Key: lambda/sql_runner_lambda.zip
@@ -811,8 +833,6 @@ Resources:
         SubnetIds:
           - !Ref PrivateSubnet1
           - !Ref PrivateSubnet2
-      Layers:
-        - !Sub 'arn:aws:lambda:${AWS::Region}:898466741470:layer:psycopg2-py311:1'
 
   # Kafka Admin Lambda - Topic management via SASL/SCRAM
   KafkaAdminFunction:

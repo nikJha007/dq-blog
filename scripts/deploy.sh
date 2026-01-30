@@ -298,7 +298,35 @@ upload_assets_to_s3() {
     fi
     aws s3 cp "$deequ_jar" "s3://${assets_bucket}/libs/" --region "$REGION"
     
-    log_success "Assets uploaded (including Deequ libraries)"
+    # Create and upload psycopg2 Lambda layer (REQUIRED for SQL Runner Lambda)
+    log_info "Creating psycopg2 Lambda layer..."
+    local psycopg2_wheel="${PROJECT_ROOT}/src/libs/psycopg2_binary-2.9.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    if [ ! -f "$psycopg2_wheel" ]; then
+        log_error "psycopg2 wheel not found: ${psycopg2_wheel}"
+        exit 1
+    fi
+    
+    # Create layer directory structure
+    local layer_dir="/tmp/psycopg2-layer"
+    rm -rf "$layer_dir"
+    mkdir -p "$layer_dir/python"
+    
+    # Extract wheel into layer structure
+    unzip -q "$psycopg2_wheel" -d "$layer_dir/python"
+    
+    # Create layer zip
+    local layer_zip="/tmp/psycopg2-layer.zip"
+    rm -f "$layer_zip"
+    (cd "$layer_dir" && zip -rq "$layer_zip" python)
+    
+    # Upload layer zip to S3
+    log_info "Uploading psycopg2 layer to S3..."
+    aws s3 cp "$layer_zip" "s3://${assets_bucket}/layers/psycopg2-layer.zip" --region "$REGION"
+    
+    # Cleanup
+    rm -rf "$layer_dir" "$layer_zip"
+    
+    log_success "Assets uploaded (including Deequ libraries and psycopg2 layer)"
 }
 
 # =============================================================================

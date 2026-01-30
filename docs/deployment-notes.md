@@ -25,6 +25,23 @@ aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[
 
 **Fix:** Added `DependsOn: RDSInstance` to MSKCluster so it only starts after RDS succeeds.
 
+### 5. psycopg2 Lambda Layer
+**Error:** `User is not authorized to perform: lambda:GetLayerVersion on resource: arn:aws:lambda:us-east-1:898466741470:layer:psycopg2-py311:1`
+
+**Issue:** External public Lambda layers may not be accessible from all accounts.
+
+**Fix:** Create our own Lambda layer from the pre-downloaded psycopg2 wheel:
+- Wheel: `psycopg2_binary-2.9.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
+- Deploy script extracts wheel into `python/` directory structure
+- Creates zip and uploads to `s3://<assets-bucket>/layers/psycopg2-layer.zip`
+- CloudFormation creates `AWS::Lambda::LayerVersion` from the S3 zip
+- SQLRunnerFunction references the layer
+
+### 6. Lambda Runtime Version
+**Issue:** psycopg2 wheel is for Python 3.10 (cp310), but Lambda was using Python 3.11.
+
+**Fix:** Changed SQLRunnerFunction runtime from `python3.11` to `python3.10` to match the wheel.
+
 ## Dependency Chain
 ```
 VPC/Networking → RDS → MSK → DMS → Glue
