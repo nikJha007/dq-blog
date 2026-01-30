@@ -381,7 +381,7 @@ Resources:
   DBParameterGroup:
     Type: AWS::RDS::DBParameterGroup
     Properties:
-      Family: postgres15
+      Family: postgres16
       Description: Enable logical replication for CDC
       Parameters:
         rds.logical_replication: '1'
