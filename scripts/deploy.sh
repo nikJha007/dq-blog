@@ -323,6 +323,34 @@ upload_assets_to_s3() {
     log_info "Uploading psycopg2 layer to S3..."
     aws s3 cp "$layer_zip" "s3://${assets_bucket}/layers/psycopg2-layer.zip" --region "$REGION"
     
+    # Create Lambda Layer from S3
+    log_info "Publishing psycopg2 Lambda layer..."
+    local layer_arn
+    layer_arn=$(aws lambda publish-layer-version \
+        --layer-name "${STACK_NAME}-psycopg2" \
+        --description "psycopg2-binary 2.9.9 for Python 3.10" \
+        --content "S3Bucket=${assets_bucket},S3Key=layers/psycopg2-layer.zip" \
+        --compatible-runtimes python3.10 \
+        --compatible-architectures x86_64 \
+        --region "$REGION" \
+        --query 'LayerVersionArn' \
+        --output text 2>/dev/null) || {
+            log_warn "Failed to publish layer, may already exist"
+        }
+    
+    if [ -n "$layer_arn" ]; then
+        log_info "Layer ARN: ${layer_arn}"
+        
+        # Attach layer to SQL Runner Lambda
+        log_info "Attaching psycopg2 layer to SQL Runner Lambda..."
+        aws lambda update-function-configuration \
+            --function-name "${STACK_NAME}-sql-runner" \
+            --layers "$layer_arn" \
+            --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
+                log_warn "Failed to attach layer to Lambda"
+            }
+    fi
+    
     # Cleanup
     rm -rf "$layer_dir" "$layer_zip"
     
