@@ -19,7 +19,7 @@ set -euo pipefail
 # =============================================================================
 # Configuration
 # =============================================================================
-STACK_NAME="${STACK_NAME:-streaming-etl}"
+STACK_NAME="${STACK_NAME:-dq-etl}"
 REGION="${AWS_REGION:-us-east-1}"
 START_GLUE=false
 SKIP_STACK=false
