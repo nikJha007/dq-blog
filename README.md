@@ -187,6 +187,14 @@ The SQL Runner Lambda requires psycopg2 to connect to PostgreSQL. Instead of usi
 - CloudFormation creates the Lambda Layer from S3
 - SQLRunnerFunction uses Python 3.10 runtime to match the wheel
 
+## kafka-python Lambda Layer
+
+The Kafka Admin Lambda requires kafka-python to manage MSK topics:
+
+- Pre-downloaded wheel: `src/libs/kafka_python-2.3.0-py2.py3-none-any.whl`
+- Deploy script creates layer zip and uploads to S3
+- Layer attached to KafkaAdminFunction post-deploy
+
 ## Utility Lambdas
 
 The CloudFormation template includes three utility Lambda functions:

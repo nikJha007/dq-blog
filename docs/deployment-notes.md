@@ -43,17 +43,46 @@ aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[
 
 **Fix:** Changed SQLRunnerFunction runtime from `python3.11` to `python3.10` to match the wheel.
 
+### 7. MSK Bootstrap Servers Not Available via GetAtt
+**Error:** `Requested attribute BootstrapBrokerStringSaslScram does not exist in schema for AWS::MSK::Cluster`
+
+**Issue:** CloudFormation doesn't expose `BootstrapBrokerStringSaslScram` as a GetAtt attribute for MSK clusters.
+
+**Fix:** Created a Custom Resource Lambda that:
+- Calls `kafka:GetBootstrapBrokers` API after MSK cluster is created
+- Returns the bootstrap servers string via CloudFormation response
+- All resources needing bootstrap servers depend on this custom resource
+
+### 8. Lambda Code S3 References During Stack Creation
+**Error:** `Error occurred while GetObject. S3 Error Code: NoSuchKey`
+
+**Issue:** Lambda functions referencing S3 for code (`S3Bucket`/`S3Key`) fail because the S3 bucket is created by the same stack, but assets aren't uploaded yet.
+
+**Fix:** Use inline `ZipFile` code for all Lambda functions instead of S3 references. Layers are created and attached post-deploy via CLI.
+
+### 9. kafka-python Lambda Layer
+**Issue:** KafkaAdminFunction needs kafka-python library to manage MSK topics.
+
+**Fix:** Same approach as psycopg2:
+- Wheel: `kafka_python-2.3.0-py2.py3-none-any.whl`
+- Deploy script creates layer and attaches to KafkaAdminFunction post-deploy
+
 ## Dependency Chain
 ```
-VPC/Networking → RDS → MSK → DMS → Glue
+VPC/Networking → RDS → MSK → MSKBootstrapServersResource (Custom Resource) → DMS/Glue/Lambdas
 ```
 
-## Python Wheels (Glue 4.0 / Python 3.10)
-- PyYAML: `PyYAML-6.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
-- PyDeequ: `pydeequ-1.2.0-py3-none-any.whl`
-- Deequ JAR: `deequ-2.0.4-spark-3.3.jar`
+## Python Wheels (Pre-downloaded in `src/libs/`)
 
-All wheels are pre-downloaded in `src/libs/` - no downloads during deployment.
+| Wheel | Purpose | Runtime |
+|-------|---------|---------|
+| `PyYAML-6.0.1-cp310-*.whl` | Config parsing (Glue) | Python 3.10 |
+| `pydeequ-1.2.0-py3-none-any.whl` | Deequ Python wrapper (Glue) | Python 3.x |
+| `deequ-2.0.4-spark-3.3.jar` | Deequ Spark library (Glue) | Spark 3.3 |
+| `psycopg2_binary-2.9.9-cp310-*.whl` | PostgreSQL driver (Lambda) | Python 3.10 |
+| `kafka_python-2.3.0-*.whl` | Kafka client (Lambda) | Python 3.11 |
+
+All wheels are pre-downloaded - **NO downloads during deployment**.
 
 ## EC2 Setup (Amazon Linux 2023)
 ```bash
