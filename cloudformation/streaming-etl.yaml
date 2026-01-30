@@ -292,6 +292,28 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-dms-sg'
 
+  # Allow DMS to connect to MSK on port 9096 for SASL/SCRAM
+  MSKSecurityGroupDMSIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref MSKSecurityGroup
+      IpProtocol: tcp
+      FromPort: 9096
+      ToPort: 9096
+      SourceSecurityGroupId: !Ref DMSSecurityGroup
+      Description: Allow DMS to connect to MSK for CDC streaming
+
+  # Allow DMS to connect to RDS on port 5432
+  RDSSecurityGroupDMSIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RDSSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref DMSSecurityGroup
+      Description: Allow DMS to connect to RDS for CDC source
+
   # ==========================================================================
   # KMS Key for MSK SCRAM Secret
   # ==========================================================================

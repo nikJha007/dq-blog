@@ -180,6 +180,51 @@ start_dms_task() {
         return 0
     fi
     
+    # Get replication instance ARN
+    local replication_instance_arn
+    replication_instance_arn=$(aws dms describe-replication-instances \
+        --filters Name=replication-instance-id,Values="${STACK_NAME}-dms" \
+        --region "$REGION" \
+        --query 'ReplicationInstances[0].ReplicationInstanceArn' \
+        --output text 2>/dev/null || echo "")
+    
+    # Get source and target endpoint ARNs
+    local source_endpoint_arn target_endpoint_arn
+    source_endpoint_arn=$(aws dms describe-endpoints \
+        --filters Name=endpoint-id,Values="${STACK_NAME}-source-postgres" \
+        --region "$REGION" \
+        --query 'Endpoints[0].EndpointArn' \
+        --output text 2>/dev/null || echo "")
+    
+    target_endpoint_arn=$(aws dms describe-endpoints \
+        --filters Name=endpoint-id,Values="${STACK_NAME}-target-msk" \
+        --region "$REGION" \
+        --query 'Endpoints[0].EndpointArn' \
+        --output text 2>/dev/null || echo "")
+    
+    # Test connections before starting task
+    if [ -n "$replication_instance_arn" ] && [ -n "$source_endpoint_arn" ]; then
+        log_info "Testing DMS source connection..."
+        aws dms test-connection \
+            --replication-instance-arn "$replication_instance_arn" \
+            --endpoint-arn "$source_endpoint_arn" \
+            --region "$REGION" > /dev/null 2>&1 || true
+        sleep 10
+    fi
+    
+    if [ -n "$replication_instance_arn" ] && [ -n "$target_endpoint_arn" ]; then
+        log_info "Testing DMS target connection..."
+        aws dms test-connection \
+            --replication-instance-arn "$replication_instance_arn" \
+            --endpoint-arn "$target_endpoint_arn" \
+            --region "$REGION" > /dev/null 2>&1 || true
+        sleep 10
+    fi
+    
+    # Wait for connection tests to complete
+    log_info "Waiting for connection tests to complete..."
+    sleep 30
+    
     local task_status
     task_status=$(aws dms describe-replication-tasks \
         --filters Name=replication-task-arn,Values="$dms_task_arn" \
@@ -308,7 +353,7 @@ generate_continuous_data() {
         local lon=$(echo "scale=4; -120 + ($RANDOM % 500) / 10" | bc)
         local speed=$(echo "scale=1; ($RANDOM % 120)" | bc)
         local fuel=$(echo "scale=1; 20 + ($RANDOM % 80)" | bc)
-        local vehicle_id=$((($RANDOM % 3) + 1))
+        local vehicle_id=$(( (RANDOM % 3) + 1 ))
         
         log_info "Inserting telemetry record #${counter}..."
         invoke_lambda "$sql_runner" "{\"sql\": \"INSERT INTO vehicle_telemetry (vehicle_id, latitude, longitude, speed_kmh, fuel_level_pct, engine_temp_c, odometer_km, engine_status) VALUES (${vehicle_id}, ${lat}, ${lon}, ${speed}, ${fuel}, 85.0, 50000.0, 'running')\"}" > /dev/null
