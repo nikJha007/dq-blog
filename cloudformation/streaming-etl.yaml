@@ -660,7 +660,7 @@ Resources:
       ReplicationInstanceIdentifier: !Sub '${EnvironmentName}-dms'
       ReplicationInstanceClass: !Ref DMSInstanceClass
       AllocatedStorage: 50
-      EngineVersion: '3.5.2'
+      EngineVersion: '3.5.4'
       MultiAZ: false
       PubliclyAccessible: false
       ReplicationSubnetGroupIdentifier: !Ref DMSSubnetGroup
