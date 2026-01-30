@@ -394,7 +394,7 @@ Resources:
       DBInstanceIdentifier: !Sub '${EnvironmentName}-postgres'
       DBInstanceClass: !Ref DBInstanceClass
       Engine: postgres
-      EngineVersion: '15.4'
+      EngineVersion: '16.11'
       DBName: etldb
       MasterUsername: postgres
       MasterUserPassword: !Ref RDSPassword
@@ -426,6 +426,7 @@ Resources:
 
   MSKCluster:
     Type: AWS::MSK::Cluster
+    DependsOn: RDSInstance
     Properties:
       ClusterName: !Sub '${EnvironmentName}-msk'
       KafkaVersion: '3.5.1'
