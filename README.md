@@ -40,6 +40,19 @@ A **config-driven CDC streaming ETL pipeline** on AWS that captures real-time da
 | **Athena Queryable** | Delta Lake tables registered in Glue Catalog for SQL analytics |
 | **Utility Lambdas** | SQL Runner, Kafka Admin, Athena Table Creator for operations |
 
+## Service Versions
+
+| Service | Version | Notes |
+|---------|---------|-------|
+| **RDS PostgreSQL** | 16.11 | Latest stable, with `wal_level=logical` for CDC |
+| **Amazon MSK (Kafka)** | 3.5.1 | SASL/SCRAM authentication on port 9096 |
+| **AWS DMS** | 3.5.4 | CDC replication engine |
+| **AWS Glue** | 4.0 | Spark 3.3, Python 3.10 |
+| **Deequ JAR** | 2.0.4-spark-3.3 | Data quality library for Spark |
+| **PyDeequ** | 1.2.0 | Python wrapper for Deequ |
+| **PyYAML** | 6.0.1 | Config parsing (cp310 manylinux wheel) |
+| **Delta Lake** | 2.4.0 | Included in Glue 4.0 |
+
 ## Prerequisites
 
 - **AWS CLI v2** installed and configured

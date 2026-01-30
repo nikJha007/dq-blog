@@ -48,6 +48,6 @@ sudo dnf install -y git python3 python3-pip curl
 | PostgreSQL | 16.11 |
 | MSK Kafka | 3.5.1 |
 | Glue | 4.0 |
-| DMS Engine | 3.5.2 |
+| DMS Engine | 3.5.4 |
 | Python (Glue) | 3.10 |
 | Spark (Glue) | 3.3 |
