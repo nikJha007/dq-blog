@@ -954,15 +954,23 @@ Resources:
           import json
           import os
           import boto3
+          import yaml
           
           def lambda_handler(event, context):
               """
               Kafka Admin Lambda - manages Kafka topics.
               Requires kafka-python layer to be attached (done by deploy.sh).
+              
+              Actions:
+                - list: List all topics
+                - create: Create a single topic
+                - info: Get connection info
+                - sync_from_config: Create topics from tables.yaml config
               """
               try:
                   from kafka.admin import KafkaAdminClient, NewTopic
                   from kafka import KafkaConsumer
+                  from kafka.errors import TopicAlreadyExistsError
               except ImportError:
                   return {
                       'statusCode': 500,
@@ -995,7 +1003,7 @@ Resources:
                       consumer = KafkaConsumer(**kafka_config)
                       topics = list(consumer.topics())
                       consumer.close()
-                      return {'statusCode': 200, 'body': json.dumps({'topics': topics})}
+                      return {'statusCode': 200, 'body': json.dumps({'topics': sorted(topics)})}
                   
                   elif action == 'create':
                       topic_name = event.get('topic')
@@ -1007,9 +1015,53 @@ Resources:
                       
                       admin = KafkaAdminClient(**kafka_config)
                       new_topic = NewTopic(name=topic_name, num_partitions=partitions, replication_factor=replication)
-                      admin.create_topics([new_topic])
+                      try:
+                          admin.create_topics([new_topic])
+                          result = {'created': topic_name}
+                      except TopicAlreadyExistsError:
+                          result = {'exists': topic_name}
                       admin.close()
-                      return {'statusCode': 200, 'body': json.dumps({'created': topic_name})}
+                      return {'statusCode': 200, 'body': json.dumps(result)}
+                  
+                  elif action == 'sync_from_config':
+                      # Load config from S3
+                      s3 = boto3.client('s3')
+                      config_bucket = os.environ.get('CONFIG_BUCKET')
+                      config_key = os.environ.get('CONFIG_KEY', 'config/tables.yaml')
+                      
+                      response = s3.get_object(Bucket=config_bucket, Key=config_key)
+                      config = yaml.safe_load(response['Body'].read().decode('utf-8'))
+                      
+                      admin = KafkaAdminClient(**kafka_config)
+                      consumer = KafkaConsumer(**kafka_config)
+                      existing_topics = consumer.topics()
+                      consumer.close()
+                      
+                      created = []
+                      skipped = []
+                      
+                      for table in config.get('tables', []):
+                          if table.get('internal', False):
+                              continue
+                          topic_name = table.get('topic')
+                          if not topic_name:
+                              continue
+                          
+                          if topic_name in existing_topics:
+                              skipped.append(topic_name)
+                          else:
+                              new_topic = NewTopic(name=topic_name, num_partitions=3, replication_factor=2)
+                              try:
+                                  admin.create_topics([new_topic])
+                                  created.append(topic_name)
+                              except TopicAlreadyExistsError:
+                                  skipped.append(topic_name)
+                      
+                      admin.close()
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps({'created': created, 'skipped': skipped})
+                      }
                   
                   elif action == 'info':
                       return {

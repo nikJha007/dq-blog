@@ -302,48 +302,101 @@ tables:
 | `round` | `decimals` | `{type: round, column: latitude, params: {decimals: 5}}` |
 | `mask_pii` | `visible_chars` | `{type: mask_pii, column: phone, params: {visible_chars: 4}}` |
 
-## Post-Deployment
+## Post-Deployment: Simulating IoT Fleet Data
 
-### 1. Generate Test Data
+After deployment completes, run the post-deployment script to set up the database, create Kafka topics, and simulate IoT fleet telemetry data.
+
+### One-Click Post-Deployment Setup
 
 ```bash
-# Seed initial vehicles and drivers
-aws lambda invoke --function-name ${STACK_NAME}-data-generator \
-  --payload '{"action": "seed", "vehicles": 10, "drivers": 8}' \
-  --cli-binary-format raw-in-base64-out response.json
+# Make script executable (if not already)
+chmod +x scripts/post-deploy.sh
 
-# Generate continuous data for 5 minutes
-aws lambda invoke --function-name ${STACK_NAME}-data-generator \
-  --payload '{"action": "generate", "duration_seconds": 300}' \
-  --cli-binary-format raw-in-base64-out response.json
+# Run full post-deployment setup
+./scripts/post-deploy.sh --stack-name dq-etl-v7
+
+# This will:
+# 1. Create RDS tables (vehicles, drivers, telemetry, deliveries, alerts)
+# 2. Create Kafka topics from config/tables.yaml
+# 3. Start DMS CDC replication task
+# 4. Start Glue streaming job
+# 5. Insert sample test data (including bad data to test DQ quarantine)
 ```
 
-### 2. Query Data in Athena
+### Manual Lambda Update (Required for sync_from_config)
 
-```sql
--- Record counts
-SELECT 'vehicles' as table_name, COUNT(*) FROM streaming_etl_db.vehicles
-UNION ALL SELECT 'vehicle_telemetry', COUNT(*) FROM streaming_etl_db.vehicle_telemetry;
+If you deployed before the latest changes, update the Kafka Admin Lambda manually:
 
--- View SCD Type 2 history
-SELECT id, status, _effective_from, _effective_to, _is_current
-FROM streaming_etl_db.deliveries
-ORDER BY id, _effective_from;
-
--- Query DQ metrics trends
-SELECT table_name, metric_name, AVG(metric_value) as avg_value
-FROM streaming_etl_db.dq_metrics
-WHERE timestamp > current_timestamp - interval '24' hour
-GROUP BY table_name, metric_name;
+```bash
+# Get the Lambda code from CloudFormation template (lines 940-1050 approximately)
+# Or update the stack to pick up the new Lambda code:
+aws cloudformation update-stack \
+  --stack-name dq-etl-v7 \
+  --template-body file://cloudformation/streaming-etl.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
 ```
 
-### 3. Check Quarantine
+### Selective Post-Deployment
+
+```bash
+# Skip certain steps if already done
+./scripts/post-deploy.sh --stack-name dq-etl-v7 --skip-tables --skip-topics
+
+# Just start DMS and Glue
+./scripts/post-deploy.sh --stack-name dq-etl-v7 --skip-tables --skip-topics
+
+# Generate continuous telemetry data (Ctrl+C to stop)
+./scripts/post-deploy.sh --stack-name dq-etl-v7 \
+  --skip-tables --skip-topics --skip-dms --skip-glue --generate-data
+```
+
+### What the Test Data Includes
+
+| Table | Sample Records | DQ Test Cases |
+|-------|---------------|---------------|
+| `vehicles` | 3 vehicles (Honda, Toyota, VW) | Valid VINs |
+| `drivers` | 2 drivers with PII (phone, license) | PII masking test |
+| `vehicle_telemetry` | GPS coordinates, speed, fuel | Speed > 350 (DQ fail → quarantine) |
+| `deliveries` | 2 deliveries with status | Status transform (uppercase) |
+| `alerts` | 2 alerts (speeding, low fuel) | Alert type validation |
+
+### Verify the Pipeline
+
+```bash
+# 1. Check Kafka topics were created
+aws lambda invoke --function-name dq-etl-v7-kafka-admin \
+  --payload '{"action": "list"}' \
+  --cli-binary-format raw-in-base64-out --region us-east-1 out.json && cat out.json
+
+# 2. Check DMS task status
+aws dms describe-replication-tasks \
+  --filters Name=replication-task-id,Values=dq-etl-v7-cdc-task \
+  --query 'ReplicationTasks[0].Status' --output text --region us-east-1
+
+# 3. Check Glue job status
+aws glue get-job-runs --job-name dq-etl-v7-streaming-job \
+  --query 'JobRuns[0].JobRunState' --output text --region us-east-1
+
+# 4. Check Delta Lake data in S3
+aws s3 ls s3://dq-etl-v7-delta-$(aws sts get-caller-identity --query Account --output text)/ --recursive --region us-east-1
+
+# 5. Check quarantine bucket for DQ failures
+aws s3 ls s3://dq-etl-v7-quarantine-$(aws sts get-caller-identity --query Account --output text)/ --recursive --region us-east-1
+```
+
+### Query Results in Athena
 
 ```sql
--- Analyze DQ failures
-SELECT _failed_rule, COUNT(*) as failures
-FROM streaming_etl_db.quarantine_telemetry
-GROUP BY _failed_rule;
+-- Check vehicles table
+SELECT * FROM dq_etl_v7_db.vehicles;
+
+-- Check telemetry with SCD2 columns
+SELECT id, vehicle_id, speed_kmh, _effective_from, _is_current 
+FROM dq_etl_v7_db.vehicle_telemetry;
+
+-- Check DQ metrics
+SELECT * FROM dq_etl_v7_db.dq_metrics ORDER BY timestamp DESC;
 ```
 
 ## Cleanup
