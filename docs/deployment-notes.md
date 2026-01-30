@@ -30,12 +30,13 @@ aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[
 
 **Issue:** External public Lambda layers may not be accessible from all accounts.
 
-**Fix:** Create our own Lambda layer from the pre-downloaded psycopg2 wheel:
+**Fix:** Create our own Lambda layer via CLI (not CloudFormation) to avoid chicken-and-egg S3 dependency:
 - Wheel: `psycopg2_binary-2.9.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
 - Deploy script extracts wheel into `python/` directory structure
 - Creates zip and uploads to `s3://<assets-bucket>/layers/psycopg2-layer.zip`
-- CloudFormation creates `AWS::Lambda::LayerVersion` from the S3 zip
-- SQLRunnerFunction references the layer
+- Uses `aws lambda publish-layer-version` to create the layer
+- Uses `aws lambda update-function-configuration` to attach layer to SQLRunnerFunction
+- SQLRunnerFunction uses inline ZipFile code (no S3 dependency)
 
 ### 6. Lambda Runtime Version
 **Issue:** psycopg2 wheel is for Python 3.10 (cp310), but Lambda was using Python 3.11.
