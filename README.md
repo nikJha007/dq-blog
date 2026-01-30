@@ -89,17 +89,21 @@ export AWS_SECRET_ACCESS_KEY="your-secret-key"
 export AWS_DEFAULT_REGION="us-east-1"
 ```
 
-### EC2 Instance Requirements
+### EC2 Instance Requirements (Amazon Linux 2023)
 
 ```bash
-# Install required tools (Amazon Linux 2023 / AL2)
-sudo yum install -y git python3 python3-pip curl
+# Install required tools
+sudo dnf install -y git python3 python3-pip curl
 
-# Or for Ubuntu
-sudo apt-get update && sudo apt-get install -y git python3 python3-pip curl
-
-# Verify AWS CLI (usually pre-installed on Amazon Linux)
+# Verify installations
+git --version
+python3 --version
 aws --version
+```
+
+For Ubuntu:
+```bash
+sudo apt-get update && sudo apt-get install -y git python3 python3-pip curl
 ```
 
 ## Quick Start

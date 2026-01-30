@@ -626,8 +626,25 @@ Resources:
   # ==========================================================================
   # DMS
   # ==========================================================================
+  
+  # DMS VPC Role - Required for DMS to manage VPC resources
+  DMSVPCRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-vpc-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dms.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonDMSVPCManagementRole
+
   DMSSubnetGroup:
     Type: AWS::DMS::ReplicationSubnetGroup
+    DependsOn: DMSVPCRole
     Properties:
       ReplicationSubnetGroupIdentifier: !Sub '${EnvironmentName}-dms-subnet-group'
       ReplicationSubnetGroupDescription: DMS subnet group
