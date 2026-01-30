@@ -463,6 +463,74 @@ Resources:
       SecretArnList:
         - !Ref MSKSecret
 
+  # Custom Resource to get MSK Bootstrap Servers (not available via GetAtt)
+  MSKBootstrapLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-msk-bootstrap-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MSKDescribe
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kafka:GetBootstrapBrokers
+                  - kafka:DescribeCluster
+                Resource: '*'
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  MSKBootstrapFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-msk-bootstrap'
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt MSKBootstrapLambdaRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  cluster_arn = event['ResourceProperties']['ClusterArn']
+                  client = boto3.client('kafka')
+                  response = client.get_bootstrap_brokers(ClusterArn=cluster_arn)
+                  bootstrap = response.get('BootstrapBrokerStringSaslScram', '')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, 
+                      {'BootstrapServers': bootstrap})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  MSKBootstrapServersResource:
+    Type: Custom::MSKBootstrap
+    DependsOn: 
+      - MSKCluster
+      - MSKScramSecretAssociation
+    Properties:
+      ServiceToken: !GetAtt MSKBootstrapFunction.Arn
+      ClusterArn: !Ref MSKCluster
+
   # ==========================================================================
   # IAM Roles
   # ==========================================================================
@@ -683,13 +751,13 @@ Resources:
 
   DMSTargetEndpoint:
     Type: AWS::DMS::Endpoint
-    DependsOn: MSKCluster
+    DependsOn: MSKBootstrapServersResource
     Properties:
       EndpointIdentifier: !Sub '${EnvironmentName}-target-msk'
       EndpointType: target
       EngineName: kafka
       KafkaSettings:
-        Broker: !GetAtt MSKCluster.BootstrapBrokerStringSaslScram
+        Broker: !GetAtt MSKBootstrapServersResource.BootstrapServers
         Topic: cdc-default
         SecurityProtocol: sasl-ssl
         SaslUserName: kafkaadmin
@@ -738,14 +806,14 @@ Resources:
 
   GlueMSKConnection:
     Type: AWS::Glue::Connection
-    DependsOn: MSKCluster
+    DependsOn: MSKBootstrapServersResource
     Properties:
       CatalogId: !Ref AWS::AccountId
       ConnectionInput:
         Name: !Sub '${EnvironmentName}-msk-connection'
         ConnectionType: KAFKA
         ConnectionProperties:
-          KAFKA_BOOTSTRAP_SERVERS: !GetAtt MSKCluster.BootstrapBrokerStringSaslScram
+          KAFKA_BOOTSTRAP_SERVERS: !GetAtt MSKBootstrapServersResource.BootstrapServers
           KAFKA_SSL_ENABLED: 'true'
         PhysicalConnectionRequirements:
           AvailabilityZone: !Select [0, !GetAZs '']
@@ -869,23 +937,97 @@ Resources:
           - !Ref PrivateSubnet2
 
   # Kafka Admin Lambda - Topic management via SASL/SCRAM
+  # NOTE: kafka-python layer is added by deploy.sh after stack creation
   KafkaAdminFunction:
     Type: AWS::Lambda::Function
-    DependsOn: MSKCluster
+    DependsOn: MSKBootstrapServersResource
     Properties:
       FunctionName: !Sub '${EnvironmentName}-kafka-admin'
-      Description: Kafka admin utility for topic management
+      Description: Kafka admin utility for topic management (kafka-python layer added post-deploy)
       Runtime: python3.11
-      Handler: kafka_admin_lambda.lambda_handler
+      Handler: index.lambda_handler
       Role: !GetAtt LambdaRole.Arn
       Timeout: 300
       MemorySize: 256
       Code:
-        S3Bucket: !Ref AssetsBucket
-        S3Key: lambda/kafka_admin_lambda.zip
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          
+          def lambda_handler(event, context):
+              """
+              Kafka Admin Lambda - manages Kafka topics.
+              Requires kafka-python layer to be attached (done by deploy.sh).
+              """
+              try:
+                  from kafka.admin import KafkaAdminClient, NewTopic
+                  from kafka import KafkaConsumer
+              except ImportError:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': 'kafka-python not available. Run deploy.sh to attach the layer.',
+                          'bootstrap_servers': os.environ.get('KAFKA_BOOTSTRAP', '')
+                      })
+                  }
+              
+              action = event.get('action', 'list')
+              bootstrap = os.environ.get('KAFKA_BOOTSTRAP', '')
+              username = os.environ.get('KAFKA_USERNAME', 'kafkaadmin')
+              
+              # Get password from Secrets Manager
+              secrets = boto3.client('secretsmanager')
+              secret_arn = os.environ.get('MSK_SECRET_ARN')
+              secret = json.loads(secrets.get_secret_value(SecretId=secret_arn)['SecretString'])
+              password = secret.get('password')
+              
+              kafka_config = {
+                  'bootstrap_servers': bootstrap,
+                  'security_protocol': 'SASL_SSL',
+                  'sasl_mechanism': 'SCRAM-SHA-512',
+                  'sasl_plain_username': username,
+                  'sasl_plain_password': password,
+              }
+              
+              try:
+                  if action == 'list':
+                      consumer = KafkaConsumer(**kafka_config)
+                      topics = list(consumer.topics())
+                      consumer.close()
+                      return {'statusCode': 200, 'body': json.dumps({'topics': topics})}
+                  
+                  elif action == 'create':
+                      topic_name = event.get('topic')
+                      partitions = event.get('partitions', 3)
+                      replication = event.get('replication_factor', 2)
+                      
+                      if not topic_name:
+                          return {'statusCode': 400, 'body': json.dumps({'error': 'topic name required'})}
+                      
+                      admin = KafkaAdminClient(**kafka_config)
+                      new_topic = NewTopic(name=topic_name, num_partitions=partitions, replication_factor=replication)
+                      admin.create_topics([new_topic])
+                      admin.close()
+                      return {'statusCode': 200, 'body': json.dumps({'created': topic_name})}
+                  
+                  elif action == 'info':
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps({
+                              'bootstrap_servers': bootstrap,
+                              'username': username
+                          })
+                      }
+                  
+                  else:
+                      return {'statusCode': 400, 'body': json.dumps({'error': f'Unknown action: {action}'})}
+                      
+              except Exception as e:
+                  return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
       Environment:
         Variables:
-          KAFKA_BOOTSTRAP: !GetAtt MSKCluster.BootstrapBrokerStringSaslScram
+          KAFKA_BOOTSTRAP: !GetAtt MSKBootstrapServersResource.BootstrapServers
           KAFKA_USERNAME: kafkaadmin
           MSK_SECRET_ARN: !Ref MSKSecret
           CONFIG_BUCKET: !Ref AssetsBucket
@@ -1013,7 +1155,7 @@ Outputs:
 
   MSKBootstrapServers:
     Description: MSK bootstrap servers (SASL/SCRAM)
-    Value: !GetAtt MSKCluster.BootstrapBrokerStringSaslScram
+    Value: !GetAtt MSKBootstrapServersResource.BootstrapServers
 
   DeltaBucket:
     Description: S3 bucket for Delta Lake tables

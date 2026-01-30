@@ -43,6 +43,16 @@ aws rds describe-db-engine-versions --engine postgres --query "DBEngineVersions[
 
 **Fix:** Changed SQLRunnerFunction runtime from `python3.11` to `python3.10` to match the wheel.
 
+### 7. MSK Bootstrap Servers Not Available via GetAtt
+**Error:** `Requested attribute BootstrapBrokerStringSaslScram does not exist in schema for AWS::MSK::Cluster`
+
+**Issue:** CloudFormation doesn't expose `BootstrapBrokerStringSaslScram` as a GetAtt attribute for MSK clusters.
+
+**Fix:** Created a Custom Resource Lambda that:
+- Calls `kafka:GetBootstrapBrokers` API after MSK cluster is created
+- Returns the bootstrap servers string via CloudFormation response
+- All resources needing bootstrap servers depend on this custom resource
+
 ## Dependency Chain
 ```
 VPC/Networking → RDS → MSK → DMS → Glue

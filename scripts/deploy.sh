@@ -325,8 +325,8 @@ upload_assets_to_s3() {
     
     # Create Lambda Layer from S3
     log_info "Publishing psycopg2 Lambda layer..."
-    local layer_arn
-    layer_arn=$(aws lambda publish-layer-version \
+    local psycopg2_layer_arn
+    psycopg2_layer_arn=$(aws lambda publish-layer-version \
         --layer-name "${STACK_NAME}-psycopg2" \
         --description "psycopg2-binary 2.9.9 for Python 3.10" \
         --content "S3Bucket=${assets_bucket},S3Key=layers/psycopg2-layer.zip" \
@@ -335,26 +335,82 @@ upload_assets_to_s3() {
         --region "$REGION" \
         --query 'LayerVersionArn' \
         --output text 2>/dev/null) || {
-            log_warn "Failed to publish layer, may already exist"
+            log_warn "Failed to publish psycopg2 layer"
         }
     
-    if [ -n "$layer_arn" ]; then
-        log_info "Layer ARN: ${layer_arn}"
+    if [ -n "$psycopg2_layer_arn" ]; then
+        log_info "psycopg2 Layer ARN: ${psycopg2_layer_arn}"
         
         # Attach layer to SQL Runner Lambda
         log_info "Attaching psycopg2 layer to SQL Runner Lambda..."
         aws lambda update-function-configuration \
             --function-name "${STACK_NAME}-sql-runner" \
-            --layers "$layer_arn" \
+            --layers "$psycopg2_layer_arn" \
             --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
-                log_warn "Failed to attach layer to Lambda"
+                log_warn "Failed to attach psycopg2 layer to Lambda"
             }
     fi
     
-    # Cleanup
+    # Cleanup psycopg2 layer temp files
     rm -rf "$layer_dir" "$layer_zip"
     
-    log_success "Assets uploaded (including Deequ libraries and psycopg2 layer)"
+    # Create and upload kafka-python Lambda layer (REQUIRED for Kafka Admin Lambda)
+    log_info "Creating kafka-python Lambda layer..."
+    local kafka_wheel="${PROJECT_ROOT}/src/libs/kafka_python-2.3.0-py2.py3-none-any.whl"
+    if [ ! -f "$kafka_wheel" ]; then
+        log_error "kafka-python wheel not found: ${kafka_wheel}"
+        exit 1
+    fi
+    
+    # Create layer directory structure
+    local kafka_layer_dir="/tmp/kafka-layer"
+    rm -rf "$kafka_layer_dir"
+    mkdir -p "$kafka_layer_dir/python"
+    
+    # Extract wheel into layer structure
+    unzip -q "$kafka_wheel" -d "$kafka_layer_dir/python"
+    
+    # Create layer zip
+    local kafka_layer_zip="/tmp/kafka-layer.zip"
+    rm -f "$kafka_layer_zip"
+    (cd "$kafka_layer_dir" && zip -rq "$kafka_layer_zip" python)
+    
+    # Upload layer zip to S3
+    log_info "Uploading kafka-python layer to S3..."
+    aws s3 cp "$kafka_layer_zip" "s3://${assets_bucket}/layers/kafka-layer.zip" --region "$REGION"
+    
+    # Create Lambda Layer from S3
+    log_info "Publishing kafka-python Lambda layer..."
+    local kafka_layer_arn
+    kafka_layer_arn=$(aws lambda publish-layer-version \
+        --layer-name "${STACK_NAME}-kafka-python" \
+        --description "kafka-python 2.3.0" \
+        --content "S3Bucket=${assets_bucket},S3Key=layers/kafka-layer.zip" \
+        --compatible-runtimes python3.10 python3.11 \
+        --compatible-architectures x86_64 \
+        --region "$REGION" \
+        --query 'LayerVersionArn' \
+        --output text 2>/dev/null) || {
+            log_warn "Failed to publish kafka-python layer"
+        }
+    
+    if [ -n "$kafka_layer_arn" ]; then
+        log_info "kafka-python Layer ARN: ${kafka_layer_arn}"
+        
+        # Attach layer to Kafka Admin Lambda
+        log_info "Attaching kafka-python layer to Kafka Admin Lambda..."
+        aws lambda update-function-configuration \
+            --function-name "${STACK_NAME}-kafka-admin" \
+            --layers "$kafka_layer_arn" \
+            --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
+                log_warn "Failed to attach kafka-python layer to Lambda"
+            }
+    fi
+    
+    # Cleanup kafka layer temp files
+    rm -rf "$kafka_layer_dir" "$kafka_layer_zip"
+    
+    log_success "Assets uploaded (including Deequ libraries, psycopg2 and kafka-python layers)"
 }
 
 # =============================================================================
