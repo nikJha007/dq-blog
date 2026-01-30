@@ -191,13 +191,15 @@ start_dms_task() {
     
     if [ "$task_status" = "stopped" ] || [ "$task_status" = "ready" ]; then
         log_info "Starting DMS task..."
-        aws dms start-replication-task \
+        if aws dms start-replication-task \
             --replication-task-arn "$dms_task_arn" \
             --start-replication-task-type start-replication \
-            --region "$REGION" > /dev/null 2>&1 || {
-                log_warn "Failed to start DMS task"
-            }
-        log_success "DMS task started"
+            --region "$REGION" > /tmp/dms-start.json 2>&1; then
+            log_success "DMS task started"
+        else
+            log_error "Failed to start DMS task:"
+            cat /tmp/dms-start.json
+        fi
     elif [ "$task_status" = "running" ]; then
         log_info "DMS task already running"
     else

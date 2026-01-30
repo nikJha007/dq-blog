@@ -659,6 +659,11 @@ Resources:
                 Resource:
                   - !Ref RDSSecret
                   - !Ref MSKSecret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt MSKSecretKMSKey.Arn
         - PolicyName: LambdaS3Access
           PolicyDocument:
             Version: '2012-10-17'
