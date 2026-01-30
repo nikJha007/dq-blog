@@ -323,20 +323,6 @@ chmod +x scripts/post-deploy.sh
 # 5. Insert sample test data (including bad data to test DQ quarantine)
 ```
 
-### Manual Lambda Update (Required for sync_from_config)
-
-If you deployed before the latest changes, update the Kafka Admin Lambda manually:
-
-```bash
-# Get the Lambda code from CloudFormation template (lines 940-1050 approximately)
-# Or update the stack to pick up the new Lambda code:
-aws cloudformation update-stack \
-  --stack-name dq-etl-v7 \
-  --template-body file://cloudformation/streaming-etl.yaml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1
-```
-
 ### Selective Post-Deployment
 
 ```bash

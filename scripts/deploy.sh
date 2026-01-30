@@ -367,8 +367,15 @@ upload_assets_to_s3() {
     rm -rf "$kafka_layer_dir"
     mkdir -p "$kafka_layer_dir/python"
     
-    # Extract wheel into layer structure
+    # Extract kafka-python wheel into layer structure
     unzip -q "$kafka_wheel" -d "$kafka_layer_dir/python"
+    
+    # Also add PyYAML for sync_from_config functionality
+    local pyyaml_wheel="${PROJECT_ROOT}/src/libs/PyYAML-6.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    if [ -f "$pyyaml_wheel" ]; then
+        log_info "Adding PyYAML to kafka layer..."
+        unzip -q "$pyyaml_wheel" -d "$kafka_layer_dir/python"
+    fi
     
     # Create layer zip
     local kafka_layer_zip="/tmp/kafka-layer.zip"
