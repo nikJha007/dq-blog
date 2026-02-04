@@ -232,12 +232,45 @@ def load_config_from_s3(s3_path: str) -> Dict[str, Any]:
     return yaml.safe_load(content)
 
 
-def get_kafka_password() -> str:
+def get_kafka_password(config: Dict) -> str:
     """Get Kafka password from Secrets Manager."""
     client = boto3.client("secretsmanager", region_name="us-east-1")
-    response = client.get_secret_value(SecretId="AmazonMSK_etl_scram_secret")
-    secret = json.loads(response["SecretString"])
-    return secret.get("password", "")
+    # Secret name follows pattern: AmazonMSK_<env>_scram
+    # Try to get from config's bootstrap servers to determine env name
+    bootstrap = config.get("kafka", {}).get("bootstrap_servers", "")
+    
+    # List secrets and find the MSK one
+    try:
+        # Try common patterns
+        secret_patterns = [
+            "AmazonMSK_dq-etl-v7_scram",
+            "AmazonMSK_etl-streaming_scram",
+            "AmazonMSK_etl_scram_secret",
+        ]
+        
+        for pattern in secret_patterns:
+            try:
+                response = client.get_secret_value(SecretId=pattern)
+                secret = json.loads(response["SecretString"])
+                logger.info("Found Kafka secret: %s", pattern)
+                return secret.get("password", "")
+            except client.exceptions.ResourceNotFoundException:
+                continue
+        
+        # Fallback: list all secrets and find MSK one
+        paginator = client.get_paginator('list_secrets')
+        for page in paginator.paginate():
+            for secret_entry in page.get('SecretList', []):
+                if 'AmazonMSK_' in secret_entry['Name'] and '_scram' in secret_entry['Name']:
+                    response = client.get_secret_value(SecretId=secret_entry['Name'])
+                    secret = json.loads(response["SecretString"])
+                    logger.info("Found Kafka secret via list: %s", secret_entry['Name'])
+                    return secret.get("password", "")
+        
+        raise Exception("No MSK SCRAM secret found")
+    except Exception as e:
+        logger.error("Failed to get Kafka password: %s", e)
+        raise
 
 
 # ============================================================================
@@ -595,7 +628,7 @@ def main():
 
     spark = get_spark()
     config = load_config_from_s3(config_path)
-    kafka_password = get_kafka_password()
+    kafka_password = get_kafka_password(config)
 
     get_registries()
 
