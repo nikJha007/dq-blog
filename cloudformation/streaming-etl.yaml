@@ -638,6 +638,8 @@ Resources:
                   - ec2:DescribeVpcEndpoints
                   - ec2:DescribeRouteTables
                   - ec2:DescribeVpcAttribute
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
                 Resource: '*'
 
   LambdaRole:

@@ -202,14 +202,13 @@ start_dms_task() {
         --query 'Endpoints[0].EndpointArn' \
         --output text 2>/dev/null || echo "")
     
-    # Test connections before starting task
+    # Test connections and wait for them to succeed
     if [ -n "$replication_instance_arn" ] && [ -n "$source_endpoint_arn" ]; then
         log_info "Testing DMS source connection..."
         aws dms test-connection \
             --replication-instance-arn "$replication_instance_arn" \
             --endpoint-arn "$source_endpoint_arn" \
             --region "$REGION" > /dev/null 2>&1 || true
-        sleep 10
     fi
     
     if [ -n "$replication_instance_arn" ] && [ -n "$target_endpoint_arn" ]; then
@@ -218,12 +217,50 @@ start_dms_task() {
             --replication-instance-arn "$replication_instance_arn" \
             --endpoint-arn "$target_endpoint_arn" \
             --region "$REGION" > /dev/null 2>&1 || true
-        sleep 10
     fi
     
-    # Wait for connection tests to complete
-    log_info "Waiting for connection tests to complete..."
-    sleep 30
+    # Wait for both connections to be successful (up to 3 minutes)
+    log_info "Waiting for DMS connection tests to complete..."
+    local max_wait=180
+    local elapsed=0
+    local interval=15
+    local source_status="testing"
+    local target_status="testing"
+    
+    while [ $elapsed -lt $max_wait ]; do
+        # Check connection statuses
+        source_status=$(aws dms describe-connections \
+            --region "$REGION" \
+            --query "Connections[?EndpointIdentifier=='${STACK_NAME}-source-postgres'].Status" \
+            --output text 2>/dev/null || echo "unknown")
+        
+        target_status=$(aws dms describe-connections \
+            --region "$REGION" \
+            --query "Connections[?EndpointIdentifier=='${STACK_NAME}-target-msk'].Status" \
+            --output text 2>/dev/null || echo "unknown")
+        
+        echo -ne "\r  Source: ${source_status}, Target: ${target_status} (${elapsed}s)    "
+        
+        if [ "$source_status" = "successful" ] && [ "$target_status" = "successful" ]; then
+            echo ""
+            log_success "Both DMS connections successful"
+            break
+        fi
+        
+        if [ "$source_status" = "failed" ] || [ "$target_status" = "failed" ]; then
+            echo ""
+            log_error "DMS connection test failed - Source: ${source_status}, Target: ${target_status}"
+            return 1
+        fi
+        
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    
+    if [ $elapsed -ge $max_wait ]; then
+        echo ""
+        log_warn "Timeout waiting for connections. Attempting to start anyway..."
+    fi
     
     local task_status
     task_status=$(aws dms describe-replication-tasks \
