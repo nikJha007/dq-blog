@@ -15,9 +15,13 @@ Architecture:
 
 import json
 import logging
+import os
 import re
 import sys
 from typing import Any, Dict, List
+
+# Set SPARK_VERSION before importing pydeequ (REQUIRED)
+os.environ['SPARK_VERSION'] = '3.3'
 
 import boto3
 import yaml

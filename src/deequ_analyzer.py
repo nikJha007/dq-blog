@@ -7,9 +7,13 @@ with state persistence to S3 and metrics storage in Delta Lake.
 """
 
 import logging
+import os
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+# Set SPARK_VERSION before importing pydeequ (REQUIRED)
+os.environ['SPARK_VERSION'] = '3.3'
 
 from pydeequ.analyzers import (
     AnalysisRunner,
