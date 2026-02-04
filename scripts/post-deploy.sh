@@ -438,80 +438,22 @@ generate_continuous_data() {
 }
 
 # =============================================================================
-# Step 7: Create Athena Tables for Delta Lake
+# Step 7: Create Athena Tables via Lambda
 # =============================================================================
 create_athena_tables() {
     log_step "Creating Athena tables for Delta Lake..."
     
-    local delta_bucket="${STACK_NAME}-delta-$(aws sts get-caller-identity --query Account --output text)"
-    local database="${STACK_NAME//-/_}_db"
-    local output_location="s3://${delta_bucket}/athena-results/"
+    local athena_creator="${STACK_NAME}-athena-table-creator"
     
-    # Table definitions with schemas
-    declare -A tables
-    tables["vehicles"]="id INT, vin STRING, license_plate STRING, make STRING, model STRING, year INT, fuel_type STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
-    tables["drivers"]="id INT, employee_id STRING, name STRING, license_number STRING, phone STRING, status STRING, safety_score DECIMAL(3,1), created_at TIMESTAMP, updated_at TIMESTAMP"
-    tables["vehicle_telemetry"]="id INT, vehicle_id INT, recorded_at TIMESTAMP, latitude DECIMAL(10,2), longitude DECIMAL(10,2), speed_kmh DECIMAL(5,1), fuel_level_pct DECIMAL(5,2), engine_temp_c DECIMAL(5,1), odometer_km DECIMAL(10,1), engine_status STRING, harsh_braking BOOLEAN, harsh_acceleration BOOLEAN, created_at TIMESTAMP"
-    tables["deliveries"]="id INT, vehicle_id INT, driver_id INT, status STRING, pickup_address STRING, delivery_address STRING, scheduled_time TIMESTAMP, actual_pickup_time TIMESTAMP, actual_delivery_time TIMESTAMP, customer_name STRING, customer_phone STRING, notes STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
-    tables["alerts"]="id INT, vehicle_id INT, driver_id INT, alert_type STRING, severity STRING, message STRING, latitude DECIMAL(10,7), longitude DECIMAL(10,7), acknowledged BOOLEAN, acknowledged_at TIMESTAMP, created_at TIMESTAMP"
-    
-    # SCD2 columns added by the Glue job
-    local scd2_cols="_effective_from TIMESTAMP, _effective_to TIMESTAMP, _is_current BOOLEAN, _ingested_at TIMESTAMP, _operation STRING"
-    
-    for table_name in "${!tables[@]}"; do
-        log_info "Creating Athena table: ${database}.${table_name}..."
-        
-        local schema="${tables[$table_name]}, ${scd2_cols}"
-        local location="s3://${delta_bucket}/${table_name}/"
-        
-        # Drop existing table first
-        local drop_ddl="DROP TABLE IF EXISTS ${database}.${table_name}"
-        aws athena start-query-execution \
-            --query-string "$drop_ddl" \
-            --query-execution-context Database="${database}" \
-            --result-configuration OutputLocation="${output_location}" \
-            --region "$REGION" > /dev/null 2>&1 || true
-        
-        sleep 2
-        
-        # Create table pointing directly to Delta Lake parquet files
-        # Using DELTA format if available, otherwise fall back to parquet
-        local create_ddl="CREATE EXTERNAL TABLE IF NOT EXISTS ${database}.${table_name} (
-            ${schema}
-        )
-        ROW FORMAT SERDE 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-        STORED AS PARQUET
-        LOCATION '${location}'
-        TBLPROPERTIES ('parquet.compression'='SNAPPY')"
-        
-        local query_id
-        query_id=$(aws athena start-query-execution \
-            --query-string "$create_ddl" \
-            --query-execution-context Database="${database}" \
-            --result-configuration OutputLocation="${output_location}" \
-            --region "$REGION" \
-            --query 'QueryExecutionId' \
-            --output text 2>/dev/null || echo "")
-        
-        if [ -n "$query_id" ]; then
-            # Wait for query to complete
-            sleep 3
-            local status
-            status=$(aws athena get-query-execution \
-                --query-execution-id "$query_id" \
-                --region "$REGION" \
-                --query 'QueryExecution.Status.State' \
-                --output text 2>/dev/null || echo "UNKNOWN")
-            
-            if [ "$status" = "SUCCEEDED" ]; then
-                log_info "  Created: ${table_name}"
-            else
-                log_warn "  Table ${table_name}: ${status}"
-            fi
-        fi
-    done
+    log_info "Invoking Athena table creator Lambda..."
+    local result
+    result=$(invoke_lambda "$athena_creator" '{"action": "create_all"}')
+    echo "$result"
+    echo ""
     
     log_success "Athena tables created"
+    
+    local database="${STACK_NAME//-/_}_db"
     log_info "Query tables in Athena: SELECT * FROM ${database}.vehicles LIMIT 10;"
 }
 
