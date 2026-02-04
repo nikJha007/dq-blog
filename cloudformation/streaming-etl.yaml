@@ -1245,18 +1245,13 @@ Resources:
               
               def create_table(table_config):
                   name = table_config['name']
-                  cols = build_columns(table_config)
                   location = f's3://{delta_bucket}/{name}/'
                   
                   # Drop existing table first
                   run_query(f'DROP TABLE IF EXISTS {database}.{name}')
                   
-                  # Create external table pointing to Delta Lake location
-                  ddl = f"""CREATE EXTERNAL TABLE {database}.{name} ({cols})
-                      ROW FORMAT SERDE 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-                      STORED AS PARQUET
-                      LOCATION '{location}'
-                      TBLPROPERTIES ('parquet.compression'='SNAPPY')"""
+                  # Create Delta Lake table using STORED AS DELTA syntax
+                  ddl = f"CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{name} STORED AS DELTA LOCATION '{location}'"
                   return run_query(ddl)
               
               try:
