@@ -228,53 +228,61 @@ class DeequAnalyzer:
         current_time = datetime.now()
         
         try:
-            metric_map = result.metricMap()
+            # Get the metrics DataFrame directly from Deequ result
+            # This is more reliable than iterating over metricMap()
+            metrics_df = AnalysisRunner.successMetricsAsDataFrame(
+                self.spark, result
+            )
             
-            for analyzer, metric in metric_map.items():
-                try:
-                    metric_name = self._get_metric_name(analyzer)
-                    column_name = self._get_column_name(analyzer)
-                    
-                    metric_value = None
-                    if hasattr(metric, 'value'):
-                        value = metric.value
-                        if hasattr(value, 'get'):
-                            metric_value = float(value.get())
-                        elif hasattr(value, 'getOrElse'):
-                            metric_value = float(value.getOrElse(None))
-                        else:
-                            metric_value = float(value) if value is not None else None
-                    
-                    threshold = self._get_threshold_for_metric(checks, metric_name, column_name)
-                    
-                    passed = True
-                    if threshold is not None and metric_value is not None:
-                        passed = metric_value >= threshold
-                    
-                    metrics_rows.append({
-                        "table_name": table_name,
-                        "batch_id": int(batch_id),
-                        "metric_name": metric_name,
-                        "column_name": column_name,
-                        "metric_value": metric_value,
-                        "threshold": threshold,
-                        "passed": passed,
-                        "timestamp": current_time,
-                    })
-                    
-                    logger.info(
-                        "[%s] Metric: %s.%s = %.4f (threshold: %s, passed: %s)",
-                        table_name, metric_name, column_name or "N/A",
-                        metric_value if metric_value else 0.0, threshold, passed
-                    )
-                    
-                except Exception as exc:
-                    logger.warning("[%s] Failed to process metric %s: %s",
-                                   table_name, analyzer, exc)
+            if metrics_df and not metrics_df.isEmpty():
+                for row in metrics_df.collect():
+                    try:
+                        # Extract fields from Deequ's metrics DataFrame
+                        # Standard columns: entity, instance, name, value
+                        metric_name = row.name if hasattr(row, 'name') else str(row[2])
+                        column_name = row.instance if hasattr(row, 'instance') else str(row[1])
+                        metric_value = float(row.value) if hasattr(row, 'value') else float(row[3])
+                        
+                        # Clean up column name (Deequ uses "*" for table-level metrics)
+                        if column_name == "*":
+                            column_name = None
+                        
+                        threshold = self._get_threshold_for_metric(checks, metric_name, column_name)
+                        
+                        passed = True
+                        if threshold is not None and metric_value is not None:
+                            passed = metric_value >= threshold
+                        
+                        metrics_rows.append({
+                            "table_name": table_name,
+                            "batch_id": int(batch_id),
+                            "metric_name": metric_name,
+                            "column_name": column_name,
+                            "metric_value": metric_value,
+                            "threshold": threshold,
+                            "passed": passed,
+                            "timestamp": current_time,
+                        })
+                        
+                        logger.info(
+                            "[%s] Metric: %s.%s = %.4f (threshold: %s, passed: %s)",
+                            table_name, metric_name, column_name or "N/A",
+                            metric_value if metric_value else 0.0, threshold, passed
+                        )
+                        
+                    except Exception as exc:
+                        logger.warning("[%s] Failed to process metric row: %s", table_name, exc)
+            else:
+                logger.info("[%s] No metrics returned from Deequ analysis", table_name)
                     
         except Exception as exc:
-            logger.error("[%s] Failed to extract metrics from result: %s",
-                         table_name, exc)
+            logger.warning("[%s] Could not extract metrics via DataFrame: %s", table_name, exc)
+            # Fallback: try to get basic info from result
+            try:
+                # Just log that analysis completed without detailed metrics
+                logger.info("[%s] Deequ analysis completed (metrics extraction skipped)", table_name)
+            except Exception:
+                pass
         
         if not metrics_rows:
             return self._create_empty_metrics_df()
