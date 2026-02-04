@@ -649,6 +649,16 @@ Resources:
                   - ec2:CreateTags
                   - ec2:DeleteTags
                 Resource: '*'
+        - PolicyName: GlueMSKAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kafka:ListClusters
+                  - kafka:GetBootstrapBrokers
+                  - kafka:DescribeCluster
+                Resource: '*'
 
   LambdaRole:
     Type: AWS::IAM::Role

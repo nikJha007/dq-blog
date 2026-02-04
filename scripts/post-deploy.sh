@@ -283,20 +283,46 @@ start_dms_task() {
             cat /tmp/dms-start.json
         fi
     elif [ "$task_status" = "failed" ]; then
-        log_warn "DMS task previously failed, restarting with reload-target..."
+        log_warn "DMS task previously failed, restarting with resume-processing..."
         if aws dms start-replication-task \
             --replication-task-arn "$dms_task_arn" \
-            --start-replication-task-type reload-target \
+            --start-replication-task-type resume-processing \
             --region "$REGION" > /tmp/dms-start.json 2>&1; then
-            log_success "DMS task restarted"
+            log_success "DMS task resumed"
         else
-            log_error "Failed to restart DMS task:"
-            cat /tmp/dms-start.json
+            log_warn "Resume failed, trying reload-target..."
+            if aws dms start-replication-task \
+                --replication-task-arn "$dms_task_arn" \
+                --start-replication-task-type reload-target \
+                --region "$REGION" > /tmp/dms-start.json 2>&1; then
+                log_success "DMS task restarted with reload-target"
+            else
+                log_warn "Reload-target failed, trying start-replication..."
+                aws dms start-replication-task \
+                    --replication-task-arn "$dms_task_arn" \
+                    --start-replication-task-type start-replication \
+                    --region "$REGION" > /tmp/dms-start.json 2>&1 || {
+                        log_error "All DMS start attempts failed:"
+                        cat /tmp/dms-start.json
+                    }
+            fi
         fi
     elif [ "$task_status" = "running" ]; then
         log_info "DMS task already running"
+    elif [ "$task_status" = "starting" ]; then
+        log_info "DMS task is starting..."
     else
-        log_warn "DMS task in state: ${task_status}"
+        log_warn "DMS task in state: ${task_status}, attempting start..."
+        aws dms start-replication-task \
+            --replication-task-arn "$dms_task_arn" \
+            --start-replication-task-type start-replication \
+            --region "$REGION" > /tmp/dms-start.json 2>&1 || {
+                log_warn "Start failed, trying resume-processing..."
+                aws dms start-replication-task \
+                    --replication-task-arn "$dms_task_arn" \
+                    --start-replication-task-type resume-processing \
+                    --region "$REGION" > /tmp/dms-start.json 2>&1 || true
+            }
     fi
 }
 
