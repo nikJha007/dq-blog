@@ -1144,12 +1144,13 @@ Resources:
           - !Ref PrivateSubnet2
 
   # Athena Table Creator Lambda - Auto-create Athena tables for Delta Lake
+  # Reads schema from tables.yaml in S3 - requires PyYAML layer (added by deploy.sh)
   AthenaTableCreatorFunction:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${EnvironmentName}-athena-table-creator'
-      Description: Creates Athena tables for Delta Lake data from tables.yaml schema
-      Runtime: python3.11
+      Description: Creates Athena tables for Delta Lake data (PyYAML layer added post-deploy)
+      Runtime: python3.10
       Handler: index.lambda_handler
       Role: !GetAtt LambdaRole.Arn
       Timeout: 300
@@ -1160,107 +1161,102 @@ Resources:
           import json
           import os
           import time
-          import yaml
           
           def lambda_handler(event, context):
               """
-              Create Athena tables for Delta Lake tables based on tables.yaml config.
-              
-              Actions:
-                - create_all: Create all tables from config
-                - create: Create a single table by name
-                - drop: Drop a single table
-                - list: List existing tables in database
+              Create Athena tables for Delta Lake tables.
+              Reads schema from tables.yaml + adds SCD2 columns from Glue.
+              Requires PyYAML layer to be attached (done by deploy.sh).
               """
-              athena = boto3.client('athena')
+              try:
+                  import yaml
+              except ImportError:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': 'PyYAML not available. Run deploy.sh to attach the layer.'
+                      })
+                  }
+              
               s3 = boto3.client('s3')
-              sts = boto3.client('sts')
+              athena = boto3.client('athena')
               
               action = event.get('action', 'create_all')
-              database = os.environ.get('GLUE_DATABASE', 'etl_streaming_db')
+              database = os.environ.get('GLUE_DATABASE')
               delta_bucket = os.environ.get('DELTA_BUCKET')
               config_bucket = os.environ.get('CONFIG_BUCKET')
               config_key = os.environ.get('CONFIG_KEY', 'config/tables.yaml')
               output_location = f's3://{delta_bucket}/athena-results/'
               
-              # Get account ID for placeholder resolution
-              account_id = sts.get_caller_identity()['Account']
-              stack_name = delta_bucket.replace(f'-delta-{account_id}', '')
-              
-              # Type mapping from tables.yaml to Athena
-              TYPE_MAP = {
-                  'integer': 'INT', 'int': 'INT',
-                  'long': 'BIGINT', 'bigint': 'BIGINT',
-                  'double': 'DOUBLE', 'float': 'DOUBLE',
-                  'string': 'STRING', 'varchar': 'STRING', 'text': 'STRING',
-                  'timestamp': 'STRING',  # DMS sends timestamps as strings
-                  'date': 'STRING',
-                  'boolean': 'STRING'  # DMS sends booleans as strings
-              }
-              
-              # SCD2 columns added by Glue job
+              # SCD2 columns added by Glue streaming job
               SCD2_COLS = [
-                  '_effective_from TIMESTAMP',
-                  '_effective_to TIMESTAMP', 
-                  '_is_current BOOLEAN',
-                  '_ingested_at TIMESTAMP',
-                  '_operation STRING'
+                  {'name': '_effective_from', 'type': 'timestamp'},
+                  {'name': '_effective_to', 'type': 'timestamp'},
+                  {'name': '_is_current', 'type': 'boolean'},
+                  {'name': '_ingested_at', 'type': 'timestamp'},
+                  {'name': '_operation', 'type': 'string'}
               ]
               
-              def load_config():
-                  response = s3.get_object(Bucket=config_bucket, Key=config_key)
-                  content = response['Body'].read().decode('utf-8')
-                  content = content.replace('${STACK_NAME}', stack_name)
-                  content = content.replace('${AWS_ACCOUNT_ID}', account_id)
-                  return yaml.safe_load(content)
+              # Type mapping from tables.yaml to Athena/Hive types
+              TYPE_MAP = {
+                  'integer': 'INT', 'int': 'INT',
+                  'string': 'STRING', 'varchar': 'STRING', 'text': 'STRING',
+                  'double': 'DOUBLE', 'float': 'DOUBLE', 'decimal': 'DOUBLE',
+                  'boolean': 'BOOLEAN', 'bool': 'BOOLEAN',
+                  'timestamp': 'TIMESTAMP', 'datetime': 'TIMESTAMP', 'date': 'STRING'
+              }
               
-              def build_columns(schema):
+              def load_config():
+                  resp = s3.get_object(Bucket=config_bucket, Key=config_key)
+                  return yaml.safe_load(resp['Body'].read().decode('utf-8'))
+              
+              def get_athena_type(col_type):
+                  return TYPE_MAP.get(col_type.lower(), 'STRING')
+              
+              def build_columns(table_config):
                   cols = []
-                  for col in schema:
-                      col_type = TYPE_MAP.get(col['type'].lower(), 'STRING')
-                      cols.append(f"`{col['name']}` {col_type}")
-                  cols.extend([f"`{c.split()[0]}` {c.split()[1]}" for c in SCD2_COLS])
+                  for col in table_config.get('columns', []):
+                      athena_type = get_athena_type(col['type'])
+                      cols.append(f"{col['name']} {athena_type}")
+                  # Add SCD2 columns
+                  for col in SCD2_COLS:
+                      athena_type = get_athena_type(col['type'])
+                      cols.append(f"{col['name']} {athena_type}")
                   return ', '.join(cols)
               
-              def execute_query(ddl):
-                  response = athena.start_query_execution(
-                      QueryString=ddl,
-                      QueryExecutionContext={'Database': database},
-                      ResultConfiguration={'OutputLocation': output_location}
-                  )
-                  query_id = response['QueryExecutionId']
-                  
-                  # Wait for completion
-                  for _ in range(30):
-                      time.sleep(2)
-                      result = athena.get_query_execution(QueryExecutionId=query_id)
-                      state = result['QueryExecution']['Status']['State']
-                      if state in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
-                          return {
-                              'query_id': query_id,
-                              'state': state,
-                              'reason': result['QueryExecution']['Status'].get('StateChangeReason', '')
-                          }
-                  return {'query_id': query_id, 'state': 'TIMEOUT'}
+              def run_query(ddl):
+                  try:
+                      resp = athena.start_query_execution(
+                          QueryString=ddl,
+                          QueryExecutionContext={'Database': database},
+                          ResultConfiguration={'OutputLocation': output_location}
+                      )
+                      qid = resp['QueryExecutionId']
+                      for _ in range(30):
+                          time.sleep(2)
+                          r = athena.get_query_execution(QueryExecutionId=qid)
+                          state = r['QueryExecution']['Status']['State']
+                          if state in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
+                              return {'state': state, 'reason': r['QueryExecution']['Status'].get('StateChangeReason', '')}
+                      return {'state': 'TIMEOUT'}
+                  except Exception as e:
+                      return {'state': 'ERROR', 'reason': str(e)}
               
               def create_table(table_config):
                   name = table_config['name']
-                  schema = table_config.get('schema', [])
-                  delta_path = table_config.get('delta_path', f's3://{delta_bucket}/{name}/')
-                  
-                  columns = build_columns(schema)
+                  cols = build_columns(table_config)
+                  location = f's3://{delta_bucket}/{name}/'
                   
                   # Drop existing table first
-                  execute_query(f'DROP TABLE IF EXISTS {database}.{name}')
+                  run_query(f'DROP TABLE IF EXISTS {database}.{name}')
                   
-                  # Create table pointing to Delta parquet files
-                  ddl = f"""CREATE EXTERNAL TABLE {database}.{name} ({columns})
-                  ROW FORMAT SERDE 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-                  STORED AS PARQUET
-                  LOCATION '{delta_path}'
-                  TBLPROPERTIES ('parquet.compression'='SNAPPY')"""
-                  
-                  return execute_query(ddl)
+                  # Create external table pointing to Delta Lake location
+                  ddl = f"""CREATE EXTERNAL TABLE {database}.{name} ({cols})
+                      ROW FORMAT SERDE 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                      STORED AS PARQUET
+                      LOCATION '{location}'
+                      TBLPROPERTIES ('parquet.compression'='SNAPPY')"""
+                  return run_query(ddl)
               
               try:
                   config = load_config()
@@ -1282,20 +1278,19 @@ Resources:
                           return {'statusCode': 400, 'body': json.dumps({'error': 'table name required'})}
                       table_config = next((t for t in tables if t['name'] == table_name), None)
                       if not table_config:
-                          return {'statusCode': 404, 'body': json.dumps({'error': f'table {table_name} not found in config'})}
+                          return {'statusCode': 404, 'body': json.dumps({'error': f'table {table_name} not found'})}
                       result = create_table(table_config)
-                      return {'statusCode': 200, 'body': json.dumps(result)}
+                      return {'statusCode': 200, 'body': json.dumps({'table': table_name, 'result': result})}
                   
                   elif action == 'drop':
                       table_name = event.get('table')
                       if not table_name:
                           return {'statusCode': 400, 'body': json.dumps({'error': 'table name required'})}
-                      result = execute_query(f'DROP TABLE IF EXISTS {database}.{table_name}')
-                      return {'statusCode': 200, 'body': json.dumps(result)}
+                      result = run_query(f'DROP TABLE IF EXISTS {database}.{table_name}')
+                      return {'statusCode': 200, 'body': json.dumps({'table': table_name, 'result': result})}
                   
                   elif action == 'list':
-                      result = execute_query(f'SHOW TABLES IN {database}')
-                      return {'statusCode': 200, 'body': json.dumps({'query_id': result['query_id'], 'state': result['state']})}
+                      return {'statusCode': 200, 'body': json.dumps({'tables': [t['name'] for t in tables]})}
                   
                   else:
                       return {'statusCode': 400, 'body': json.dumps({'error': f'Unknown action: {action}'})}

@@ -417,7 +417,54 @@ upload_assets_to_s3() {
     # Cleanup kafka layer temp files
     rm -rf "$kafka_layer_dir" "$kafka_layer_zip"
     
-    log_success "Assets uploaded (including Deequ libraries, psycopg2 and kafka-python layers)"
+    # Create and upload PyYAML Lambda layer for Athena Table Creator
+    log_info "Creating PyYAML Lambda layer for Athena Table Creator..."
+    local pyyaml_wheel="${PROJECT_ROOT}/src/libs/PyYAML-6.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    if [ -f "$pyyaml_wheel" ]; then
+        local pyyaml_layer_dir="/tmp/pyyaml-layer"
+        rm -rf "$pyyaml_layer_dir"
+        mkdir -p "$pyyaml_layer_dir/python"
+        
+        unzip -q "$pyyaml_wheel" -d "$pyyaml_layer_dir/python"
+        
+        local pyyaml_layer_zip="/tmp/pyyaml-layer.zip"
+        rm -f "$pyyaml_layer_zip"
+        (cd "$pyyaml_layer_dir" && zip -rq "$pyyaml_layer_zip" python)
+        
+        aws s3 cp "$pyyaml_layer_zip" "s3://${assets_bucket}/layers/pyyaml-layer.zip" --region "$REGION"
+        
+        log_info "Publishing PyYAML Lambda layer..."
+        local pyyaml_layer_arn
+        pyyaml_layer_arn=$(aws lambda publish-layer-version \
+            --layer-name "${STACK_NAME}-pyyaml" \
+            --description "PyYAML 6.0.1 for Python 3.10" \
+            --content "S3Bucket=${assets_bucket},S3Key=layers/pyyaml-layer.zip" \
+            --compatible-runtimes python3.10 python3.11 \
+            --compatible-architectures x86_64 \
+            --region "$REGION" \
+            --query 'LayerVersionArn' \
+            --output text 2>/dev/null) || {
+                log_warn "Failed to publish PyYAML layer"
+            }
+        
+        if [ -n "$pyyaml_layer_arn" ]; then
+            log_info "PyYAML Layer ARN: ${pyyaml_layer_arn}"
+            
+            log_info "Attaching PyYAML layer to Athena Table Creator Lambda..."
+            aws lambda update-function-configuration \
+                --function-name "${STACK_NAME}-athena-table-creator" \
+                --layers "$pyyaml_layer_arn" \
+                --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
+                    log_warn "Failed to attach PyYAML layer to Athena Lambda"
+                }
+        fi
+        
+        rm -rf "$pyyaml_layer_dir" "$pyyaml_layer_zip"
+    else
+        log_warn "PyYAML wheel not found at ${pyyaml_wheel}"
+    fi
+    
+    log_success "Assets uploaded (including Deequ libraries, psycopg2, kafka-python, and PyYAML layers)"
 }
 
 # =============================================================================
