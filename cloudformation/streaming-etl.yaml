@@ -420,7 +420,8 @@ Resources:
       DBName: etldb
       MasterUsername: postgres
       MasterUserPassword: !Ref RDSPassword
-      AllocatedStorage: 20
+      AllocatedStorage: 50
+      MaxAllocatedStorage: 100
       StorageType: gp3
       DBSubnetGroupName: !Ref DBSubnetGroup
       DBParameterGroupName: !Ref DBParameterGroup
