@@ -715,6 +715,7 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:ListBucket
+                  - s3:GetBucketLocation
                 Resource:
                   - !GetAtt AssetsBucket.Arn
                   - !Sub '${AssetsBucket.Arn}/*'
@@ -1186,7 +1187,7 @@ Resources:
               delta_bucket = os.environ.get('DELTA_BUCKET')
               config_bucket = os.environ.get('CONFIG_BUCKET')
               config_key = os.environ.get('CONFIG_KEY', 'config/tables.yaml')
-              output_location = f's3://{delta_bucket}/athena-results/'
+              output_location = f's3://{config_bucket}/athena-results/'
               
               # SCD2 columns added by Glue streaming job
               SCD2_COLS = [
