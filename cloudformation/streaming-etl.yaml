@@ -874,6 +874,8 @@ Resources:
         '--extra-jars': !Sub 's3://${AssetsBucket}/libs/deequ-2.0.4-spark-3.3.jar'
         '--datalake-formats': delta
         '--conf': 'spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog'
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
       Connections:
         Connections:
           - !Ref GlueMSKConnection

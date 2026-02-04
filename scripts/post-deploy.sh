@@ -282,6 +282,17 @@ start_dms_task() {
             log_error "Failed to start DMS task:"
             cat /tmp/dms-start.json
         fi
+    elif [ "$task_status" = "failed" ]; then
+        log_warn "DMS task previously failed, restarting with reload-target..."
+        if aws dms start-replication-task \
+            --replication-task-arn "$dms_task_arn" \
+            --start-replication-task-type reload-target \
+            --region "$REGION" > /tmp/dms-start.json 2>&1; then
+            log_success "DMS task restarted"
+        else
+            log_error "Failed to restart DMS task:"
+            cat /tmp/dms-start.json
+        fi
     elif [ "$task_status" = "running" ]; then
         log_info "DMS task already running"
     else
