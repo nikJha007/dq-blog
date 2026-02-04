@@ -106,12 +106,10 @@ export AWS_DEFAULT_REGION="us-east-1"
 
 ```bash
 # Install required tools
-sudo dnf install -y git python3 python3-pip curl
+sudo dnf install -y git python3 python3-pip curl --allowerasing
 
 # Verify installations
-git --version
-python3 --version
-aws --version
+git --version && python3 --version && aws --version
 ```
 
 For Ubuntu:
@@ -134,7 +132,42 @@ chmod +x scripts/*.sh
 
 # Or deploy with custom stack name
 ./scripts/deploy.sh --stack-name my-etl-stack --region us-east-1
+
+# After deployment completes, run post-deploy setup
+./scripts/post-deploy.sh
+
+# Or with custom stack name
+./scripts/post-deploy.sh --stack-name my-etl-stack --region us-east-1
 ```
+
+The `post-deploy.sh` script:
+1. Creates RDS database tables
+2. Creates Kafka topics from config
+3. Starts DMS CDC replication
+4. Starts Glue streaming job
+5. Generates sample test data
+
+**Post-deploy options:**
+```bash
+# Skip specific steps if needed
+./scripts/post-deploy.sh --skip-tables --skip-topics
+
+# Generate more test data only
+./scripts/post-deploy.sh --skip-tables --skip-topics --skip-dms --skip-glue
+```
+
+### Step 3: Create Athena Tables
+
+After Glue has processed data (wait 1-2 minutes), create Athena tables:
+
+```bash
+./scripts/create-athena-tables.sh
+
+# Or with custom stack name
+./scripts/create-athena-tables.sh --stack-name my-etl-stack --region us-east-1
+```
+
+The script checks if Delta data exists before creating tables. If no data is found, it will prompt you to generate test data.
 
 ## Project Structure
 
@@ -147,6 +180,7 @@ dq-blog/
 │   └── dms_table_mappings.json # DMS table mapping rules
 ├── scripts/
 │   ├── deploy.sh               # One-click deployment script
+│   ├── post-deploy.sh          # Post-deployment setup (tables, topics, data)
 │   ├── teardown.sh             # Resource cleanup script
 │   ├── iot_data_generator.py   # Test data generator Lambda
 │   ├── create_tables.sql       # RDS table DDL

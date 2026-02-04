@@ -522,13 +522,21 @@ main() {
     
     display_summary
     
-    create_athena_tables
-    echo ""
-    
-    generate_continuous_data
-    
     log_success "Post-deployment setup complete!"
     echo ""
+    log_info "Next: Run ./scripts/create-athena-tables.sh after Glue has processed data"
+    echo ""
+    
+    # Prompt for continuous data generation
+    if [ "$GENERATE_DATA" = false ]; then
+        echo ""
+        read -p "Generate continuous test data? (y/n): " choice
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            GENERATE_DATA=true
+        fi
+    fi
+    
+    generate_continuous_data
 }
 
 main "$@"
