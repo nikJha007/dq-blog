@@ -1250,8 +1250,8 @@ Resources:
                   # Drop existing table first
                   run_query(f'DROP TABLE IF EXISTS {database}.{name}')
                   
-                  # Create Delta Lake table using STORED AS DELTA syntax
-                  ddl = f"CREATE EXTERNAL TABLE IF NOT EXISTS {database}.{name} STORED AS DELTA LOCATION '{location}'"
+                  # Create Delta Lake table - Athena uses CREATE TABLE (not EXTERNAL) for Delta
+                  ddl = f"CREATE TABLE {database}.{name} LOCATION '{location}' TBLPROPERTIES ('table_type' = 'DELTA')"
                   return run_query(ddl)
               
               try:
