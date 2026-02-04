@@ -1247,11 +1247,11 @@ Resources:
                   name = table_config['name']
                   location = f's3://{delta_bucket}/{name}/'
                   
-                  # Drop existing table first
-                  run_query(f'DROP TABLE IF EXISTS {database}.{name}')
+                  # Drop existing table first (use backticks for names with hyphens)
+                  run_query(f'DROP TABLE IF EXISTS `{database}`.`{name}`')
                   
-                  # Create Delta Lake table - Athena uses CREATE TABLE (not EXTERNAL) for Delta
-                  ddl = f"CREATE TABLE {database}.{name} LOCATION '{location}' TBLPROPERTIES ('table_type' = 'DELTA')"
+                  # Create Delta Lake table
+                  ddl = f"CREATE TABLE `{database}`.`{name}` LOCATION '{location}' TBLPROPERTIES ('table_type' = 'DELTA')"
                   return run_query(ddl)
               
               try:
