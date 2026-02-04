@@ -221,15 +221,57 @@ def get_spark() -> SparkSession:
 
 
 def load_config_from_s3(s3_path: str) -> Dict[str, Any]:
-    """Load YAML config from S3."""
+    """Load YAML config from S3 and resolve placeholders."""
     logger.info("Loading config from: %s", s3_path)
     s3 = boto3.client("s3")
+    sts = boto3.client("sts")
+    
     path = s3_path.replace("s3://", "")
     bucket = path.split("/")[0]
     key = "/".join(path.split("/")[1:])
+    
+    # Get AWS account ID
+    account_id = sts.get_caller_identity()["Account"]
+    
+    # Derive stack name from bucket name (format: <stack>-assets-<account>)
+    stack_name = bucket.replace(f"-assets-{account_id}", "")
+    
     response = s3.get_object(Bucket=bucket, Key=key)
     content = response["Body"].read().decode("utf-8")
-    return yaml.safe_load(content)
+    
+    # Replace placeholders
+    content = content.replace("${STACK_NAME}", stack_name)
+    content = content.replace("${AWS_ACCOUNT_ID}", account_id)
+    
+    logger.info("Resolved config placeholders: STACK_NAME=%s, AWS_ACCOUNT_ID=%s", 
+                stack_name, account_id)
+    
+    config = yaml.safe_load(content)
+    
+    # Resolve Kafka bootstrap servers from MSK
+    if config.get("kafka", {}).get("bootstrap_servers") == "PLACEHOLDER_BOOTSTRAP_SERVERS":
+        bootstrap = get_msk_bootstrap_servers(stack_name)
+        config["kafka"]["bootstrap_servers"] = bootstrap
+        logger.info("Resolved MSK bootstrap servers: %s", bootstrap)
+    
+    return config
+
+
+def get_msk_bootstrap_servers(stack_name: str) -> str:
+    """Get MSK bootstrap servers from the cluster."""
+    kafka_client = boto3.client("kafka", region_name="us-east-1")
+    
+    # List clusters and find the one matching our stack
+    clusters = kafka_client.list_clusters()
+    for cluster in clusters.get("ClusterInfoList", []):
+        if stack_name in cluster.get("ClusterName", ""):
+            cluster_arn = cluster["ClusterArn"]
+            response = kafka_client.get_bootstrap_brokers(ClusterArn=cluster_arn)
+            bootstrap = response.get("BootstrapBrokerStringSaslScram", "")
+            if bootstrap:
+                return bootstrap
+    
+    raise Exception(f"Could not find MSK cluster for stack: {stack_name}")
 
 
 def get_kafka_password(config: Dict) -> str:
