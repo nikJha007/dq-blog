@@ -248,6 +248,9 @@ def load_config_from_s3(s3_path: str) -> Dict[str, Any]:
     
     config = yaml.safe_load(content)
     
+    # Store stack name in config for downstream use
+    config["_stack_name"] = stack_name
+    
     # Resolve Kafka bootstrap servers from MSK
     if config.get("kafka", {}).get("bootstrap_servers") == "PLACEHOLDER_BOOTSTRAP_SERVERS":
         bootstrap = get_msk_bootstrap_servers(stack_name)
@@ -259,7 +262,7 @@ def load_config_from_s3(s3_path: str) -> Dict[str, Any]:
 
 def get_msk_bootstrap_servers(stack_name: str) -> str:
     """Get MSK bootstrap servers from the cluster."""
-    kafka_client = boto3.client("kafka", region_name="us-east-1")
+    kafka_client = boto3.client("kafka")
     
     # List clusters and find the one matching our stack
     clusters = kafka_client.list_clusters()
@@ -276,28 +279,20 @@ def get_msk_bootstrap_servers(stack_name: str) -> str:
 
 def get_kafka_password(config: Dict) -> str:
     """Get Kafka password from Secrets Manager."""
-    client = boto3.client("secretsmanager", region_name="us-east-1")
-    # Secret name follows pattern: AmazonMSK_<env>_scram
-    # Try to get from config's bootstrap servers to determine env name
-    bootstrap = config.get("kafka", {}).get("bootstrap_servers", "")
+    client = boto3.client("secretsmanager")
+    stack_name = config.get("_stack_name", "")
     
-    # List secrets and find the MSK one
     try:
-        # Try common patterns
-        secret_patterns = [
-            "AmazonMSK_dq-etl-v7_scram",
-            "AmazonMSK_etl-streaming_scram",
-            "AmazonMSK_etl_scram_secret",
-        ]
-        
-        for pattern in secret_patterns:
+        # Try the expected secret name first (CloudFormation creates this)
+        if stack_name:
+            secret_name = f"AmazonMSK_{stack_name}_scram"
             try:
-                response = client.get_secret_value(SecretId=pattern)
+                response = client.get_secret_value(SecretId=secret_name)
                 secret = json.loads(response["SecretString"])
-                logger.info("Found Kafka secret: %s", pattern)
+                logger.info("Found Kafka secret: %s", secret_name)
                 return secret.get("password", "")
             except client.exceptions.ResourceNotFoundException:
-                continue
+                logger.info("Secret %s not found, searching...", secret_name)
         
         # Fallback: list all secrets and find MSK one
         paginator = client.get_paginator('list_secrets')
