@@ -181,6 +181,13 @@ deploy_cloudformation_stack() {
     local template_file="${PROJECT_ROOT}/cloudformation/streaming-etl.yaml"
     local stack_status
     
+    # Auto-detect if dms-vpc-role already exists
+    local create_dms_vpc_role="true"
+    if aws iam get-role --role-name dms-vpc-role --region "$REGION" > /dev/null 2>&1; then
+        log_info "dms-vpc-role already exists in this account, skipping creation"
+        create_dms_vpc_role="false"
+    fi
+    
     stack_status=$(stack_exists || echo "DOES_NOT_EXIST")
     
     if [ "$stack_status" = "DOES_NOT_EXIST" ]; then
@@ -193,6 +200,7 @@ deploy_cloudformation_stack() {
             --capabilities CAPABILITY_NAMED_IAM \
             --parameters \
                 ParameterKey=EnvironmentName,ParameterValue="$STACK_NAME" \
+                ParameterKey=CreateDMSVPCRole,ParameterValue="$create_dms_vpc_role" \
             --tags \
                 Key=Project,Value=streaming-etl \
             --output text > /tmp/stack-output.txt 2>&1 || {
@@ -214,6 +222,7 @@ deploy_cloudformation_stack() {
             --capabilities CAPABILITY_NAMED_IAM \
             --parameters \
                 ParameterKey=EnvironmentName,ParameterValue="$STACK_NAME" \
+                ParameterKey=CreateDMSVPCRole,ParameterValue="$create_dms_vpc_role" \
             --output text > /tmp/stack-output.txt 2>&1 || {
                 if grep -q "No updates" /tmp/stack-output.txt; then
                     log_info "No stack updates needed"
@@ -522,6 +531,7 @@ start_glue_job() {
         return 0
     fi
     
+    # Stop any running job first (needed to pick up new script changes)
     local running_jobs
     running_jobs=$(aws glue get-job-runs \
         --job-name "$glue_job_name" \
@@ -530,15 +540,21 @@ start_glue_job() {
         --output text 2>/dev/null || echo "")
     
     if [ -n "$running_jobs" ]; then
-        log_info "Glue job already running"
-    else
-        log_info "Starting Glue job..."
-        aws glue start-job-run \
+        log_info "Stopping existing Glue job run to pick up latest code..."
+        aws glue batch-stop-job-run \
             --job-name "$glue_job_name" \
-            --region "$REGION" > /tmp/glue-output.txt 2>&1 || {
-                log_warn "Failed to start Glue job"
-            }
+            --job-run-ids $running_jobs \
+            --region "$REGION" > /dev/null 2>&1 || true
+        log_info "Waiting 30s for job to stop..."
+        sleep 30
     fi
+    
+    log_info "Starting Glue job: ${glue_job_name}"
+    aws glue start-job-run \
+        --job-name "$glue_job_name" \
+        --region "$REGION" > /tmp/glue-output.txt 2>&1 || {
+            log_warn "Failed to start Glue job"
+        }
     
     log_success "Glue job started"
 }

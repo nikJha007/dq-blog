@@ -345,6 +345,7 @@ start_glue_job() {
         return 0
     fi
     
+    # Stop any running job first (needed to pick up new script changes)
     local running_jobs
     running_jobs=$(aws glue get-job-runs \
         --job-name "$glue_job_name" \
@@ -353,16 +354,22 @@ start_glue_job() {
         --output text 2>/dev/null || echo "")
     
     if [ -n "$running_jobs" ]; then
-        log_info "Glue job already running"
-    else
-        log_info "Starting Glue job: ${glue_job_name}"
-        aws glue start-job-run \
+        log_info "Stopping existing Glue job run to pick up latest code..."
+        aws glue batch-stop-job-run \
             --job-name "$glue_job_name" \
-            --region "$REGION" > /dev/null 2>&1 || {
-                log_warn "Failed to start Glue job"
-            }
-        log_success "Glue job started"
+            --job-run-ids $running_jobs \
+            --region "$REGION" > /dev/null 2>&1 || true
+        log_info "Waiting 30s for job to stop..."
+        sleep 30
     fi
+    
+    log_info "Starting Glue job: ${glue_job_name}"
+    aws glue start-job-run \
+        --job-name "$glue_job_name" \
+        --region "$REGION" > /dev/null 2>&1 || {
+            log_warn "Failed to start Glue job"
+        }
+    log_success "Glue job started"
 }
 
 # =============================================================================

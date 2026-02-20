@@ -27,6 +27,7 @@ Metadata:
           - GlueWorkerType
           - GlueNumberOfWorkers
           - DMSInstanceClass
+          - CreateDMSVPCRole
     ParameterLabels:
       EnvironmentName:
         default: "Environment Name (used as prefix for all resources)"
@@ -99,15 +100,16 @@ Parameters:
     MaxValue: 10
     Description: Number of Glue workers
 
-Mappings:
-  # S3 bucket containing pre-packaged assets (scripts, configs, Lambda code)
-  AssetLocations:
-    us-east-1:
-      Bucket: aws-streaming-etl-assets
-      Prefix: v1.0.0
-    us-west-2:
-      Bucket: aws-streaming-etl-assets
-      Prefix: v1.0.0
+  CreateDMSVPCRole:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Set to false if dms-vpc-role already exists in this account
+
+Conditions:
+  ShouldCreateDMSVPCRole: !Equals [!Ref CreateDMSVPCRole, 'true']
 
 Resources:
   # ==========================================================================
@@ -750,6 +752,7 @@ Resources:
   # DMS VPC Role - Required for DMS to manage VPC resources
   DMSVPCRole:
     Type: AWS::IAM::Role
+    Condition: ShouldCreateDMSVPCRole
     Properties:
       RoleName: dms-vpc-role
       AssumeRolePolicyDocument:
@@ -764,7 +767,6 @@ Resources:
 
   DMSSubnetGroup:
     Type: AWS::DMS::ReplicationSubnetGroup
-    DependsOn: DMSVPCRole
     Properties:
       ReplicationSubnetGroupIdentifier: !Sub '${EnvironmentName}-dms-subnet-group'
       ReplicationSubnetGroupDescription: DMS subnet group
