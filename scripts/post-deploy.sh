@@ -1,22 +1,23 @@
 #!/bin/bash
 # =============================================================================
-# Streaming ETL Framework - Post-Deployment Setup & Simulation
+# Streaming ETL Framework - Post-Deployment Setup
 # =============================================================================
 # Run this after deploy.sh completes to:
-#   1. Create RDS tables
+#   1. Create RDS tables from generated DDL
 #   2. Create Kafka topics from config
 #   3. Start DMS replication
 #   4. Start Glue streaming job
-#   5. Generate test data
+#   5. Create Athena tables
+#   6. Generate test data via data generator Lambda
 #
 # Usage: ./post-deploy.sh [OPTIONS]
 #   -s, --stack-name    Stack name (default: dq-etl)
+#   -u, --use-case      Use case name (REQUIRED, e.g., vehicle-telemetry, healthcare-iot)
 #   -r, --region        AWS region (default: us-east-1)
 #   --skip-tables       Skip RDS table creation
 #   --skip-topics       Skip Kafka topic creation
 #   --skip-dms          Skip starting DMS task
 #   --skip-glue         Skip starting Glue job
-#   --generate-data     Generate continuous test data
 # =============================================================================
 
 set -euo pipefail
@@ -26,12 +27,14 @@ set -euo pipefail
 # =============================================================================
 STACK_NAME="${STACK_NAME:-dq-etl}"
 REGION="${AWS_REGION:-us-east-1}"
+USE_CASE=""
 SKIP_TABLES=false
 SKIP_TOPICS=false
 SKIP_DMS=false
 SKIP_GLUE=false
-GENERATE_DATA=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+BUILD_DIR="${PROJECT_ROOT}/build"
 
 # =============================================================================
 # Colors and Logging
@@ -56,15 +59,40 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             -s|--stack-name) STACK_NAME="$2"; shift 2 ;;
+            -u|--use-case) USE_CASE="$2"; shift 2 ;;
             -r|--region) REGION="$2"; shift 2 ;;
             --skip-tables) SKIP_TABLES=true; shift ;;
             --skip-topics) SKIP_TOPICS=true; shift ;;
             --skip-dms) SKIP_DMS=true; shift ;;
             --skip-glue) SKIP_GLUE=true; shift ;;
-            --generate-data) GENERATE_DATA=true; shift ;;
             *) log_error "Unknown option: $1"; exit 1 ;;
         esac
     done
+}
+
+# =============================================================================
+# Validate Use Case
+# =============================================================================
+validate_use_case() {
+    if [ -z "$USE_CASE" ]; then
+        log_error "Missing required --use-case flag (e.g., vehicle-telemetry, healthcare-iot)"
+        exit 1
+    fi
+
+    CONFIG_PATH="${PROJECT_ROOT}/examples/${USE_CASE}/config/tables.yaml"
+    GENERATOR_PATH="${PROJECT_ROOT}/examples/${USE_CASE}/scripts/data_generator.py"
+
+    if [ ! -f "$CONFIG_PATH" ]; then
+        log_error "Config not found: examples/${USE_CASE}/config/tables.yaml"
+        log_error "Available use cases:"
+        for dir in "${PROJECT_ROOT}"/examples/*/; do
+            [ -d "$dir" ] && log_error "  - $(basename "$dir")"
+        done
+        exit 1
+    fi
+
+    log_info "Use case: ${USE_CASE}"
+    log_info "Config: examples/${USE_CASE}/config/tables.yaml"
 }
 
 # =============================================================================
@@ -95,7 +123,7 @@ get_stack_output() {
 }
 
 # =============================================================================
-# Step 1: Create RDS Tables
+# Step 1: Create RDS Tables from Generated DDL
 # =============================================================================
 create_rds_tables() {
     if [ "$SKIP_TABLES" = true ]; then
@@ -103,36 +131,41 @@ create_rds_tables() {
         return 0
     fi
     
-    log_step "Creating RDS tables..."
+    log_step "Creating RDS tables from generated DDL..."
     
     local sql_runner="${STACK_NAME}-sql-runner"
+    local ddl_file="${BUILD_DIR}/create_tables.sql"
     
-    # vehicles table
-    log_info "Creating vehicles table..."
-    invoke_lambda "$sql_runner" '{"sql": "CREATE TABLE IF NOT EXISTS vehicles (id SERIAL PRIMARY KEY, vin VARCHAR(17) NOT NULL UNIQUE, license_plate VARCHAR(20), make VARCHAR(50), model VARCHAR(50), year INTEGER, fuel_type VARCHAR(20) DEFAULT '\''diesel'\'', status VARCHAR(20) DEFAULT '\''active'\'', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())"}'
-    echo ""
+    if [ ! -f "$ddl_file" ]; then
+        log_warn "Generated DDL not found at ${ddl_file}. Running config compiler..."
+        python3.10 -m src.config_compiler --config "$CONFIG_PATH" --output "$BUILD_DIR" || {
+            log_error "Config compilation failed."
+            exit 1
+        }
+    fi
     
-    # drivers table
-    log_info "Creating drivers table..."
-    invoke_lambda "$sql_runner" '{"sql": "CREATE TABLE IF NOT EXISTS drivers (id SERIAL PRIMARY KEY, employee_id VARCHAR(20) NOT NULL UNIQUE, name VARCHAR(255) NOT NULL, license_number VARCHAR(50), phone VARCHAR(20), status VARCHAR(20) DEFAULT '\''available'\'', safety_score DECIMAL(3,1) DEFAULT 100.0, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())"}'
-    echo ""
+    # Read DDL and execute each statement via SQL Runner Lambda
+    # Split on semicolons and execute each non-empty statement
+    local statement=""
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*-- ]] && continue
+        statement="${statement} ${line}"
+        if [[ "$line" == *";" ]]; then
+            # Clean up the statement
+            statement=$(echo "$statement" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+            if [ -n "$statement" ]; then
+                log_info "Executing: ${statement:0:80}..."
+                local payload
+                payload=$(printf '{"sql": "%s"}' "$(echo "$statement" | sed 's/"/\\"/g')")
+                invoke_lambda "$sql_runner" "$payload"
+                echo ""
+            fi
+            statement=""
+        fi
+    done < "$ddl_file"
     
-    # vehicle_telemetry table
-    log_info "Creating vehicle_telemetry table..."
-    invoke_lambda "$sql_runner" '{"sql": "CREATE TABLE IF NOT EXISTS vehicle_telemetry (id SERIAL PRIMARY KEY, vehicle_id INTEGER, recorded_at TIMESTAMP NOT NULL DEFAULT NOW(), latitude DECIMAL(10,7), longitude DECIMAL(10,7), speed_kmh DECIMAL(5,1), fuel_level_pct DECIMAL(5,2), engine_temp_c DECIMAL(5,1), odometer_km DECIMAL(10,1), engine_status VARCHAR(20), harsh_braking BOOLEAN DEFAULT FALSE, harsh_acceleration BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())"}'
-    echo ""
-    
-    # deliveries table
-    log_info "Creating deliveries table..."
-    invoke_lambda "$sql_runner" '{"sql": "CREATE TABLE IF NOT EXISTS deliveries (id SERIAL PRIMARY KEY, vehicle_id INTEGER, driver_id INTEGER, status VARCHAR(20) DEFAULT '\''assigned'\'', pickup_address TEXT, delivery_address TEXT, scheduled_time TIMESTAMP, actual_pickup_time TIMESTAMP, actual_delivery_time TIMESTAMP, customer_name VARCHAR(255), customer_phone VARCHAR(20), notes TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())"}'
-    echo ""
-    
-    # alerts table
-    log_info "Creating alerts table..."
-    invoke_lambda "$sql_runner" '{"sql": "CREATE TABLE IF NOT EXISTS alerts (id SERIAL PRIMARY KEY, vehicle_id INTEGER, driver_id INTEGER, alert_type VARCHAR(50), severity VARCHAR(20), message TEXT, latitude DECIMAL(10,7), longitude DECIMAL(10,7), acknowledged BOOLEAN DEFAULT FALSE, acknowledged_at TIMESTAMP, created_at TIMESTAMP DEFAULT NOW())"}'
-    echo ""
-    
-    log_success "RDS tables created"
+    log_success "RDS tables created from generated DDL"
 }
 
 # =============================================================================
@@ -373,79 +406,7 @@ start_glue_job() {
 }
 
 # =============================================================================
-# Step 5: Generate Test Data
-# =============================================================================
-generate_test_data() {
-    log_step "Generating test data..."
-    
-    local sql_runner="${STACK_NAME}-sql-runner"
-    
-    # Insert sample vehicles
-    log_info "Inserting sample vehicles..."
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO vehicles (vin, license_plate, make, model, year, fuel_type, status) VALUES ('\''1HGBH41JXMN109186'\'', '\''ABC-1234'\'', '\''Honda'\'', '\''Accord'\'', 2023, '\''gasoline'\'', '\''active'\'') ON CONFLICT (vin) DO NOTHING"}'
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO vehicles (vin, license_plate, make, model, year, fuel_type, status) VALUES ('\''2T1BURHE5JC123456'\'', '\''XYZ-5678'\'', '\''Toyota'\'', '\''Camry'\'', 2022, '\''hybrid'\'', '\''active'\'') ON CONFLICT (vin) DO NOTHING"}'
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO vehicles (vin, license_plate, make, model, year, fuel_type, status) VALUES ('\''3VWDX7AJ5DM123789'\'', '\''DEF-9012'\'', '\''Volkswagen'\'', '\''Jetta'\'', 2021, '\''diesel'\'', '\''active'\'') ON CONFLICT (vin) DO NOTHING"}'
-    echo ""
-    
-    # Insert sample drivers
-    log_info "Inserting sample drivers..."
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO drivers (employee_id, name, license_number, phone, status, safety_score) VALUES ('\''EMP001'\'', '\''John Smith'\'', '\''DL123456'\'', '\''555-0101'\'', '\''available'\'', 95.5) ON CONFLICT (employee_id) DO NOTHING"}'
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO drivers (employee_id, name, license_number, phone, status, safety_score) VALUES ('\''EMP002'\'', '\''Jane Doe'\'', '\''DL789012'\'', '\''555-0102'\'', '\''on_duty'\'', 98.0) ON CONFLICT (employee_id) DO NOTHING"}'
-    echo ""
-    
-    # Insert sample telemetry (this will trigger DQ rules)
-    log_info "Inserting sample telemetry data..."
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO vehicle_telemetry (vehicle_id, latitude, longitude, speed_kmh, fuel_level_pct, engine_temp_c, odometer_km, engine_status) VALUES (1, 37.7749, -122.4194, 65.5, 75.0, 90.0, 45000.0, '\''running'\'')"}'
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO vehicle_telemetry (vehicle_id, latitude, longitude, speed_kmh, fuel_level_pct, engine_temp_c, odometer_km, engine_status) VALUES (2, 34.0522, -118.2437, 80.0, 50.0, 85.0, 32000.0, '\''running'\'')"}'
-    # Insert bad data to test DQ quarantine (speed > 350)
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO vehicle_telemetry (vehicle_id, latitude, longitude, speed_kmh, fuel_level_pct, engine_temp_c, odometer_km, engine_status) VALUES (3, 40.7128, -74.0060, 400.0, 25.0, 95.0, 28000.0, '\''running'\'')"}'
-    echo ""
-    
-    # Insert sample deliveries
-    log_info "Inserting sample deliveries..."
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO deliveries (vehicle_id, driver_id, status, pickup_address, delivery_address, customer_name, customer_phone) VALUES (1, 1, '\''assigned'\'', '\''123 Main St'\'', '\''456 Oak Ave'\'', '\''Alice Johnson'\'', '\''555-1234'\'')"}'
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO deliveries (vehicle_id, driver_id, status, pickup_address, delivery_address, customer_name, customer_phone) VALUES (2, 2, '\''in_transit'\'', '\''789 Pine Rd'\'', '\''321 Elm St'\'', '\''Bob Williams'\'', '\''555-5678'\'')"}'
-    echo ""
-    
-    # Insert sample alerts
-    log_info "Inserting sample alerts..."
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO alerts (vehicle_id, driver_id, alert_type, severity, message, latitude, longitude) VALUES (1, 1, '\''speeding'\'', '\''warning'\'', '\''Vehicle exceeded speed limit'\'', 37.7749, -122.4194)"}'
-    invoke_lambda "$sql_runner" '{"sql": "INSERT INTO alerts (vehicle_id, driver_id, alert_type, severity, message, latitude, longitude) VALUES (3, NULL, '\''low_fuel'\'', '\''info'\'', '\''Fuel level below 30%'\'', 40.7128, -74.0060)"}'
-    echo ""
-    
-    log_success "Test data generated"
-}
-
-# =============================================================================
-# Step 6: Continuous Data Generation (Optional)
-# =============================================================================
-generate_continuous_data() {
-    if [ "$GENERATE_DATA" = false ]; then
-        return 0
-    fi
-    
-    log_step "Generating continuous test data (Ctrl+C to stop)..."
-    
-    local sql_runner="${STACK_NAME}-sql-runner"
-    local counter=1
-    
-    while true; do
-        local lat=$(echo "scale=4; 30 + ($RANDOM % 200) / 10" | bc)
-        local lon=$(echo "scale=4; -120 + ($RANDOM % 500) / 10" | bc)
-        local speed=$(echo "scale=1; ($RANDOM % 120)" | bc)
-        local fuel=$(echo "scale=1; 20 + ($RANDOM % 80)" | bc)
-        local vehicle_id=$(( (RANDOM % 3) + 1 ))
-        
-        log_info "Inserting telemetry record #${counter}..."
-        invoke_lambda "$sql_runner" "{\"sql\": \"INSERT INTO vehicle_telemetry (vehicle_id, latitude, longitude, speed_kmh, fuel_level_pct, engine_temp_c, odometer_km, engine_status) VALUES (${vehicle_id}, ${lat}, ${lon}, ${speed}, ${fuel}, 85.0, 50000.0, 'running')\"}" > /dev/null
-        
-        counter=$((counter + 1))
-        sleep 5
-    done
-}
-
-# =============================================================================
-# Step 7: Create Athena Tables via Lambda
+# Step 5: Create Athena Tables via Lambda
 # =============================================================================
 create_athena_tables() {
     log_step "Creating Athena tables for Delta Lake..."
@@ -461,7 +422,35 @@ create_athena_tables() {
     log_success "Athena tables created"
     
     local database="${STACK_NAME//-/_}_db"
-    log_info "Query tables in Athena: SELECT * FROM ${database}.vehicles LIMIT 10;"
+    log_info "Query tables in Athena: SELECT * FROM ${database}.<table_name> LIMIT 10;"
+}
+
+# =============================================================================
+# Step 6: Generate Test Data via Data Generator Lambda
+# =============================================================================
+generate_test_data() {
+    log_step "Generating test data via data generator Lambda..."
+    
+    local generator="${STACK_NAME}-data-generator"
+    
+    # Check if generator Lambda exists
+    if ! aws lambda get-function --function-name "$generator" --region "$REGION" &>/dev/null; then
+        log_warn "Data generator Lambda not found: ${generator}"
+        log_info "You can generate data manually after deploying the generator."
+        return 0
+    fi
+    
+    # Seed reference data first
+    log_info "Seeding reference data..."
+    invoke_lambda "$generator" '{"action": "seed"}'
+    echo ""
+    
+    # Generate a burst of test data
+    log_info "Generating burst of test data..."
+    invoke_lambda "$generator" '{"action": "burst", "records": 100}'
+    echo ""
+    
+    log_success "Test data generated"
 }
 
 # =============================================================================
@@ -477,7 +466,8 @@ display_summary() {
     glue_job=$(get_stack_output "GlueJobName")
     
     echo "Stack Name: ${STACK_NAME}"
-    echo "Region: ${REGION}"
+    echo "Use Case:   ${USE_CASE}"
+    echo "Region:     ${REGION}"
     echo ""
     [ -n "$rds_endpoint" ] && echo "RDS Endpoint: ${rds_endpoint}"
     [ -n "$delta_bucket" ] && echo "Delta Bucket: ${delta_bucket}"
@@ -486,13 +476,11 @@ display_summary() {
     
     echo "Next Steps:"
     echo "  1. Check Glue job status in AWS Console"
-    echo "  2. Query Delta Lake tables in Athena:"
-    echo "     SELECT * FROM ${STACK_NAME}_db.vehicles;"
-    echo "     SELECT * FROM ${STACK_NAME}_db.vehicle_telemetry;"
+    echo "  2. Query Delta Lake tables in Athena"
     echo "  3. Check quarantine bucket for DQ failures:"
     echo "     aws s3 ls s3://${STACK_NAME}-quarantine-\${AWS_ACCOUNT_ID}/ --recursive"
     echo "  4. Generate more data:"
-    echo "     ./post-deploy.sh --stack-name ${STACK_NAME} --skip-tables --skip-topics --skip-dms --skip-glue --generate-data"
+    echo "     aws lambda invoke --function-name ${STACK_NAME}-data-generator --payload '{\"action\": \"burst\", \"records\": 100}' /tmp/out.json"
     echo ""
 }
 
@@ -507,8 +495,10 @@ main() {
     echo ""
     
     parse_args "$@"
+    validate_use_case
     
     log_info "Stack Name: ${STACK_NAME}"
+    log_info "Use Case: ${USE_CASE}"
     log_info "Region: ${REGION}"
     echo ""
     
@@ -524,6 +514,9 @@ main() {
     start_glue_job
     echo ""
     
+    create_athena_tables
+    echo ""
+    
     generate_test_data
     echo ""
     
@@ -531,19 +524,6 @@ main() {
     
     log_success "Post-deployment setup complete!"
     echo ""
-    log_info "Next: Run ./scripts/create-athena-tables.sh after Glue has processed data"
-    echo ""
-    
-    # Prompt for continuous data generation
-    if [ "$GENERATE_DATA" = false ]; then
-        echo ""
-        read -p "Generate continuous test data? (y/n): " choice
-        if [[ "$choice" =~ ^[Yy]$ ]]; then
-            GENERATE_DATA=true
-        fi
-    fi
-    
-    generate_continuous_data
 }
 
 main "$@"

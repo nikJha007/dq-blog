@@ -75,7 +75,24 @@ class DQRegistry:
             "range": self._range_check,
             "allowed_values": self._allowed_values_check,
             "regex": self._regex_check,
+            "not_null": self._not_null_check,
+            "unique": self._unique_check,
+            "length": self._length_check,
         }
+        self._builtin_rules = set(self._rules.keys())
+
+    def register(self, rule_type: str, handler) -> None:
+        """Register a custom DQ rule handler. Built-in rules cannot be overwritten."""
+        if rule_type in self._builtin_rules:
+            logger.warning("Cannot overwrite built-in DQ rule: %s", rule_type)
+            return
+        if rule_type in self._rules:
+            logger.warning("Overwriting existing registered DQ rule: %s", rule_type)
+        self._rules[rule_type] = handler
+
+    def list_rules(self) -> List[str]:
+        """Return a list of all built-in and registered rule type names."""
+        return list(self._rules.keys())
 
     def apply(self, dataframe: DataFrame, rule_type: str, column: str,
               params: Dict[str, Any], table_name: str, rule_id: str) -> tuple:
@@ -118,6 +135,35 @@ class DQRegistry:
         cond = col(column).rlike(pattern)
         return dataframe.filter(cond), dataframe.filter(~cond)
 
+    def _not_null_check(self, dataframe: DataFrame, column: str,
+                        params: Dict[str, Any]) -> tuple:
+        """Partition into records where column is not null (passed) vs null (failed)."""
+        cond = col(column).isNotNull()
+        return dataframe.filter(cond), dataframe.filter(~cond)
+
+    def _unique_check(self, dataframe: DataFrame, column: str,
+                      params: Dict[str, Any]) -> tuple:
+        """Partition into records with unique column values (passed) vs duplicates (failed)."""
+        from pyspark.sql.functions import count as spark_count
+
+        window = Window.partitionBy(column)
+        df_with_count = dataframe.withColumn("_dup_count", spark_count("*").over(window))
+        passed_df = df_with_count.filter(col("_dup_count") == 1).drop("_dup_count")
+        failed_df = df_with_count.filter(col("_dup_count") > 1).drop("_dup_count")
+        return passed_df, failed_df
+
+    def _length_check(self, dataframe: DataFrame, column: str,
+                      params: Dict[str, Any]) -> tuple:
+        """Partition into records where string length is within min/max (passed) vs outside (failed)."""
+        from pyspark.sql.functions import length as str_length
+
+        col_len = str_length(col(column))
+        cond = col(column).isNotNull()
+        if "min" in params:
+            cond = cond & (col_len >= params["min"])
+        if "max" in params:
+            cond = cond & (col_len <= params["max"])
+        return dataframe.filter(cond), dataframe.filter(~cond)
 
 
 # ============================================================================
@@ -143,7 +189,24 @@ class TransformRegistry:
             "upper": self._upper_transform,
             "round": self._round_transform,
             "mask_pii": self._mask_pii_transform,
+            "cast": self._cast_transform,
+            "default_value": self._default_value_transform,
+            "rename": self._rename_transform,
         }
+        self._builtin_transforms = set(self._transforms.keys())
+
+    def register(self, transform_type: str, handler) -> None:
+        """Register a custom transform handler. Built-in transforms cannot be overwritten."""
+        if transform_type in self._builtin_transforms:
+            logger.warning("Cannot overwrite built-in transform: %s", transform_type)
+            return
+        if transform_type in self._transforms:
+            logger.warning("Overwriting existing registered transform: %s", transform_type)
+        self._transforms[transform_type] = handler
+
+    def list_transforms(self) -> List[str]:
+        """Return a list of all built-in and registered transform type names."""
+        return list(self._transforms.keys())
 
     def apply(self, dataframe: DataFrame, transform_type: str, column: str,
               params: Dict[str, Any], table_name: str, transform_id: str) -> DataFrame:
@@ -188,6 +251,25 @@ class TransformRegistry:
             column,
             self._concat(self._substring(col(column), 1, visible), lit("****"))
         )
+
+    def _cast_transform(self, dataframe: DataFrame, column: str,
+                        params: Dict[str, Any]) -> DataFrame:
+        """Cast column to specified Spark type via target_type param."""
+        spark_type = build_spark_type(params["target_type"])
+        return dataframe.withColumn(column, col(column).cast(spark_type))
+
+    def _default_value_transform(self, dataframe: DataFrame, column: str,
+                                 params: Dict[str, Any]) -> DataFrame:
+        """Replace null values in column with specified default value."""
+        return dataframe.withColumn(
+            column,
+            when(col(column).isNull(), lit(params["value"])).otherwise(col(column))
+        )
+
+    def _rename_transform(self, dataframe: DataFrame, column: str,
+                          params: Dict[str, Any]) -> DataFrame:
+        """Rename column to new_name param."""
+        return dataframe.withColumnRenamed(column, params["new_name"])
 
 
 # Global registries
@@ -274,7 +356,7 @@ def get_msk_bootstrap_servers(stack_name: str) -> str:
             if bootstrap:
                 return bootstrap
     
-    raise Exception(f"Could not find MSK cluster for stack: {stack_name}")
+    raise ValueError(f"Could not find MSK cluster for stack: {stack_name}")
 
 
 def get_kafka_password(config: Dict) -> str:
@@ -304,7 +386,7 @@ def get_kafka_password(config: Dict) -> str:
                     logger.info("Found Kafka secret via list: %s", secret_entry['Name'])
                     return secret.get("password", "")
         
-        raise Exception("No MSK SCRAM secret found")
+        raise ValueError("No MSK SCRAM secret found")
     except Exception as e:
         logger.error("Failed to get Kafka password: %s", e)
         raise
