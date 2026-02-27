@@ -44,8 +44,40 @@ Config-driven CDC streaming ETL on AWS. Define tables, DQ rules, transforms, and
 
 ## Prerequisites
 
-- AWS CLI v2 configured with appropriate permissions (CloudFormation, RDS, DMS, MSK, Glue, S3, IAM, Lambda, Secrets Manager, Athena, KMS)
+- AWS CLI v2 configured
 - Python 3.10
+- AWS account with permissions for CloudFormation, RDS, DMS, MSK, Glue, S3, IAM, Lambda, Secrets Manager, Athena, KMS
+
+## EC2 Setup (Amazon Linux 2023)
+
+```bash
+# Install required tools
+sudo dnf install -y git python3.10 python3-pip curl unzip --allowerasing
+
+# Install AWS CLI v2 (if not pre-installed)
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip -q awscliv2.zip && sudo ./aws/install && rm -rf aws awscliv2.zip
+
+# Verify installations
+git --version && python3.10 --version && aws --version
+```
+
+### AWS Credentials
+
+Option 1 — IAM Instance Profile (recommended): attach an IAM role with the required permissions to your EC2 instance.
+
+Option 2 — AWS CLI:
+
+```bash
+aws configure
+# Enter: Access Key ID, Secret Access Key, Region, Output format (json)
+```
+
+Verify:
+
+```bash
+aws sts get-caller-identity
+```
 
 ## Quick Start
 
@@ -55,18 +87,19 @@ git clone https://github.com/nikJha007/dq-blog.git
 cd dq-blog
 chmod +x scripts/*.sh
 
-# Deploy (configure region and stack name as needed)
+# Configure your stack name and region
 STACK="my-etl-stack"
 REGION="us-west-2"
 
+# Validates config, compiles to deployment artifacts, deploys CloudFormation stack, uploads all assets to S3
 ./scripts/deploy.sh --stack-name $STACK --use-case vehicle-telemetry --region $REGION
+
+# Creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data
 ./scripts/post-deploy.sh --stack-name $STACK --use-case vehicle-telemetry --region $REGION
 
-# Teardown when done
+# Teardown when done — stops all services, empties buckets, deletes the stack
 ./scripts/teardown.sh --stack-name $STACK --region $REGION --force
 ```
-
-`deploy.sh` validates and compiles the config, deploys the CloudFormation stack, and uploads all assets to S3. `post-deploy.sh` creates RDS tables, Kafka topics, starts DMS/Glue, creates Athena tables, and seeds test data.
 
 ## Project Structure
 

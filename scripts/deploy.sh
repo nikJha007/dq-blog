@@ -243,6 +243,15 @@ check_prerequisites() {
     account_id=$(aws sts get-caller-identity --query Account --output text)
     log_info "AWS Account: ${account_id}"
     log_info "Region: ${REGION}"
+    # Ensure PyYAML is installed locally (needed for config validator and compiler)
+    if ! python3.10 -c "import yaml" 2>/dev/null; then
+        log_info "Installing PyYAML for local config validation..."
+        python3.10 -m pip install PyYAML -q || {
+            log_error "Failed to install PyYAML. Run: python3.10 -m pip install PyYAML"
+            exit 1
+        }
+    fi
+
     log_success "Prerequisites OK"
 }
 
@@ -262,6 +271,21 @@ deploy_cloudformation_stack() {
         create_dms_vpc_role="false"
     fi
 
+    # Build parameters JSON file (avoids shell escaping issues with inline JSON)
+    local dms_mappings
+    dms_mappings=$(cat "${BUILD_DIR}/dms_table_mappings.json")
+    local params_file="/tmp/cfn-params.json"
+    python3.10 -c "
+import json, sys
+params = [
+    {'ParameterKey': 'EnvironmentName', 'ParameterValue': sys.argv[1]},
+    {'ParameterKey': 'CreateDMSVPCRole', 'ParameterValue': sys.argv[2]},
+    {'ParameterKey': 'DMSTableMappings', 'ParameterValue': sys.argv[3]},
+]
+with open(sys.argv[4], 'w') as f:
+    json.dump(params, f)
+" "$STACK_NAME" "$create_dms_vpc_role" "$dms_mappings" "$params_file"
+
     stack_status=$(stack_exists || echo "DOES_NOT_EXIST")
 
     if [ "$stack_status" = "DOES_NOT_EXIST" ]; then
@@ -272,12 +296,8 @@ deploy_cloudformation_stack() {
             --template-body "file://${template_file}" \
             --region "$REGION" \
             --capabilities CAPABILITY_NAMED_IAM \
-            --parameters \
-                ParameterKey=EnvironmentName,ParameterValue="$STACK_NAME" \
-                ParameterKey=CreateDMSVPCRole,ParameterValue="$create_dms_vpc_role" \
-                ParameterKey=DMSTableMappings,ParameterValue="$(cat "${BUILD_DIR}/dms_table_mappings.json")" \
-            --tags \
-                Key=Project,Value=streaming-etl \
+            --parameters "file://${params_file}" \
+            --tags Key=Project,Value=streaming-etl \
             --output text > /tmp/stack-output.txt 2>&1 || {
                 log_error "Failed to create stack"
                 cat /tmp/stack-output.txt
@@ -295,10 +315,7 @@ deploy_cloudformation_stack() {
             --template-body "file://${template_file}" \
             --region "$REGION" \
             --capabilities CAPABILITY_NAMED_IAM \
-            --parameters \
-                ParameterKey=EnvironmentName,ParameterValue="$STACK_NAME" \
-                ParameterKey=CreateDMSVPCRole,ParameterValue="$create_dms_vpc_role" \
-                ParameterKey=DMSTableMappings,ParameterValue="$(cat "${BUILD_DIR}/dms_table_mappings.json")" \
+            --parameters "file://${params_file}" \
             --output text > /tmp/stack-output.txt 2>&1 || {
                 if grep -q "No updates" /tmp/stack-output.txt; then
                     log_info "No stack updates needed"
