@@ -83,13 +83,14 @@ def get_db_credentials() -> Dict[str, str]:
         return _cached_credentials
 
     secret_arn = os.environ.get("RDS_SECRET_ARN")
+    rds_host = os.environ.get("RDS_HOST", os.environ.get("DB_HOST", DEFAULT_DB_HOST))
     if secret_arn:
         try:
             client = boto3.client("secretsmanager")
             response = client.get_secret_value(SecretId=secret_arn)
             secret_data = json.loads(response.get("SecretString", "{}"))
             _cached_credentials = {
-                "host": secret_data.get("host", DEFAULT_DB_HOST),
+                "host": secret_data.get("host", rds_host),
                 "dbname": secret_data.get("dbname", DEFAULT_DB_NAME),
                 "username": secret_data.get("username", DEFAULT_DB_USER),
                 "password": secret_data.get("password", DEFAULT_DB_PASS),
@@ -99,7 +100,7 @@ def get_db_credentials() -> Dict[str, str]:
             print(f"Warning: Failed to get secret: {e}")
 
     _cached_credentials = {
-        "host": os.environ.get("DB_HOST", DEFAULT_DB_HOST),
+        "host": rds_host,
         "dbname": os.environ.get("DB_NAME", DEFAULT_DB_NAME),
         "username": os.environ.get("DB_USER", DEFAULT_DB_USER),
         "password": os.environ.get("DB_PASS", DEFAULT_DB_PASS),
