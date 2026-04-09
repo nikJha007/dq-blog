@@ -1209,13 +1209,13 @@ Resources:
               
               def build_columns(table_config):
                   cols = []
-                  for col in table_config.get('columns', []):
+                  for col in table_config.get('schema', []):
                       athena_type = get_athena_type(col['type'])
-                      cols.append(f"{col['name']} {athena_type}")
+                      cols.append(f"`{col['name']}` {athena_type}")
                   # Add SCD2 columns
                   for col in SCD2_COLS:
                       athena_type = get_athena_type(col['type'])
-                      cols.append(f"{col['name']} {athena_type}")
+                      cols.append(f"`{col['name']}` {athena_type}")
                   return ', '.join(cols)
               
               def run_query(ddl):
@@ -1239,9 +1239,13 @@ Resources:
               def create_table(table_config):
                   name = table_config['name']
                   location = f's3://{delta_bucket}/{name}/'
+                  columns = build_columns(table_config)
                   
-                  # Create Delta Lake external table (IF NOT EXISTS handles duplicates)
-                  ddl = f"CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`{name}` LOCATION '{location}' TBLPROPERTIES ('table_type' = 'DELTA')"
+                  # Drop first to pick up schema changes
+                  run_query(f'DROP TABLE IF EXISTS `{database}`.`{name}`')
+                  
+                  # Create Delta Lake external table with columns from tables.yaml
+                  ddl = f"CREATE EXTERNAL TABLE `{database}`.`{name}` ({columns}) LOCATION '{location}' TBLPROPERTIES ('table_type' = 'DELTA')"
                   return run_query(ddl)
               
               try:
