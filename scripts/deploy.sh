@@ -470,6 +470,46 @@ upload_assets_to_s3() {
             --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
                 log_warn "Failed to attach psycopg2 layer to Lambda"
             }
+
+        # Attach layer to Data Generator Lambda + deploy actual generator code
+        if [ -f "$GENERATOR_PATH" ]; then
+            log_info "Deploying data generator code to Lambda..."
+            local gen_zip_dir="/tmp/data-generator-pkg"
+            local gen_zip="/tmp/data-generator.zip"
+            rm -rf "$gen_zip_dir" "$gen_zip"
+            mkdir -p "$gen_zip_dir"
+            cp "$GENERATOR_PATH" "$gen_zip_dir/data_generator.py"
+            # Create index.py wrapper that delegates to data_generator.lambda_handler
+            cat > "$gen_zip_dir/index.py" << 'GENEOF'
+from data_generator import lambda_handler
+GENEOF
+            (cd "$gen_zip_dir" && zip -rq "$gen_zip" .)
+
+            log_info "Attaching psycopg2 layer to Data Generator Lambda..."
+            aws lambda update-function-configuration \
+                --function-name "${STACK_NAME}-data-generator" \
+                --layers "$psycopg2_layer_arn" \
+                --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
+                    log_warn "Failed to attach psycopg2 layer to Data Generator Lambda"
+                }
+
+            # Wait for config update to complete before updating code
+            log_info "Waiting for Lambda config update..."
+            aws lambda wait function-updated \
+                --function-name "${STACK_NAME}-data-generator" \
+                --region "$REGION" 2>/dev/null || sleep 10
+
+            log_info "Updating Data Generator Lambda code..."
+            aws lambda update-function-code \
+                --function-name "${STACK_NAME}-data-generator" \
+                --zip-file "fileb://${gen_zip}" \
+                --region "$REGION" > /tmp/lambda-update.txt 2>&1 || {
+                    log_warn "Failed to update Data Generator Lambda code"
+                }
+
+            rm -rf "$gen_zip_dir" "$gen_zip"
+            log_success "Data Generator Lambda deployed with ${USE_CASE} generator"
+        fi
     fi
 
     # Cleanup psycopg2 layer temp files

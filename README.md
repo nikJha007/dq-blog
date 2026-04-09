@@ -51,17 +51,22 @@ Config-driven CDC streaming ETL on AWS. Define tables, DQ rules, transforms, and
 ## EC2 Setup (Amazon Linux 2023)
 
 ```bash
-# Install required tools
-sudo dnf install -y git python3.10 python3-pip curl unzip --allowerasing
+# Install system dependencies
+sudo dnf install -y git curl unzip gcc openssl-devel bzip2-devel libffi-devel zlib-devel --allowerasing
+
+# Install Python 3.10 (not available via dnf on Amazon Linux 2023)
+curl -O https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
+tar xzf Python-3.10.14.tgz
+cd Python-3.10.14 && ./configure --enable-optimizations && make -j$(nproc) && sudo make altinstall && cd ..
+rm -rf Python-3.10.14 Python-3.10.14.tgz
 
 # Install AWS CLI v2 (if not pre-installed)
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" 
 unzip -q awscliv2.zip && sudo ./aws/install && rm -rf aws awscliv2.zip
 
-# Verify installations
+# Verify
 git --version && python3.10 --version && aws --version
 ```
-
 ### AWS Credentials
 
 Option 1 — IAM Instance Profile (recommended): attach an IAM role with the required permissions to your EC2 instance.
@@ -89,16 +94,33 @@ chmod +x scripts/*.sh
 
 # Configure your stack name and region
 STACK="my-etl-stack"
-REGION="us-west-2"
+REGION="ap-southeast-1"
 
 # Validates config, compiles to deployment artifacts, deploys CloudFormation stack, uploads all assets to S3
 ./scripts/deploy.sh --stack-name $STACK --use-case vehicle-telemetry --region $REGION
 
+  # OR
+
+./scripts/deploy.sh --stack-name $STACK --use-case healthcare-iot --region $REGION
+
 # Creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data
 ./scripts/post-deploy.sh --stack-name $STACK --use-case vehicle-telemetry --region $REGION
 
+  # OR
+
+./scripts/post-deploy.sh --stack-name $STACK --use-case healthcare-iot --region $REGION
+
+    # Generate more data:
+    ./scripts/post-deploy.sh --stack-name $STACK --use-case healthcare-iot --region $REGION \
+      --skip-tables --skip-topics --skip-dms --skip-glue
+
+
 # Teardown when done — stops all services, empties buckets, deletes the stack
 ./scripts/teardown.sh --stack-name $STACK --region $REGION --force
+
+
+
+
 ```
 
 ## Project Structure

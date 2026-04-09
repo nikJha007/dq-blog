@@ -1290,6 +1290,44 @@ Resources:
           CONFIG_BUCKET: !Ref AssetsBucket
           CONFIG_KEY: config/tables.yaml
 
+  # Data Generator Lambda - Generates test data for the selected use case
+  # Placeholder code is deployed with CFn; actual generator code is uploaded by deploy.sh
+  # Requires psycopg2 layer (added by deploy.sh)
+  DataGeneratorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: RDSInstance
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-data-generator'
+      Description: Data generator for test/demo data (code + psycopg2 layer updated by deploy.sh)
+      Runtime: python3.10
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 900
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 500,
+                  'body': json.dumps({
+                      'error': 'Data generator not deployed yet. Run deploy.sh to upload the use-case generator.'
+                  })
+              }
+      Environment:
+        Variables:
+          RDS_HOST: !GetAtt RDSInstance.Endpoint.Address
+          RDS_DATABASE: etldb
+          RDS_USER: postgres
+          RDS_SECRET_ARN: !Ref RDSSecret
+          STACK_NAME: !Ref EnvironmentName
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+
 Outputs:
   VpcId:
     Description: VPC ID
@@ -1330,6 +1368,10 @@ Outputs:
   AthenaTableCreatorLambda:
     Description: Athena Table Creator Lambda function name
     Value: !Ref AthenaTableCreatorFunction
+
+  DataGeneratorLambda:
+    Description: Data Generator Lambda function name
+    Value: !Ref DataGeneratorFunction
 
   NextSteps:
     Description: Post-deployment steps
