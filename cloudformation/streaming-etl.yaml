@@ -1286,7 +1286,7 @@ Resources:
                       table_name = event.get('table')
                       if not table_name:
                           return {'statusCode': 400, 'body': json.dumps({'error': 'table name required'})}
-                      result = run_query(f'DROP TABLE IF EXISTS {database}.{table_name}')
+                      result = run_query(f'DROP TABLE IF EXISTS `{database}`.`{table_name}`')
                       return {'statusCode': 200, 'body': json.dumps({'table': table_name, 'result': result})}
                   
                   elif action == 'list':

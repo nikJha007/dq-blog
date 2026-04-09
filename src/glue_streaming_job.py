@@ -672,6 +672,13 @@ def process_batch(batch_df: DataFrame, batch_id: int, table_config: Dict,
         if inserts.count() > 0:
             logger.info("[%s] Creating Delta table at %s", table_name, delta_path)
             inserts.write.format("delta").mode("overwrite").save(delta_path)
+            # Generate symlink manifest for Athena compatibility
+            try:
+                dt = DeltaTable.forPath(spark, delta_path)
+                dt.generate("symlink_format_manifest")
+                logger.info("[%s] Generated symlink manifest for Athena", table_name)
+            except Exception as exc:
+                logger.warning("[%s] Failed to generate manifest: %s", table_name, exc)
         return
 
     # SCD2 MERGE
@@ -692,6 +699,12 @@ def process_batch(batch_df: DataFrame, batch_id: int, table_config: Dict,
     new_records = staged_df.filter(col("_operation").isin("INSERT", "UPDATE"))
     if new_records.count() > 0:
         new_records.write.format("delta").mode("append").save(delta_path)
+
+    # Regenerate symlink manifest for Athena after every write
+    try:
+        delta_table.generate("symlink_format_manifest")
+    except Exception as exc:
+        logger.warning("[%s] Failed to generate manifest: %s", table_name, exc)
 
     logger.info("[%s] BATCH %d COMPLETE - %d records", table_name, batch_id, final_count)
 
