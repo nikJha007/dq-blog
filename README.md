@@ -79,7 +79,7 @@ flowchart TD
 ### 1. Install git
 
 ```bash
-sudo dnf install -y git
+sudo dnf install -y git && git --version
 ```
 
 ### 2. Clone the repo

@@ -840,11 +840,17 @@ def main():
         from awsglue.utils import getResolvedOptions
         args = getResolvedOptions(sys.argv, ["JOB_NAME", "CONFIG_PATH"])
         config_path = args["CONFIG_PATH"]
-        # Set SNS topic ARN from Glue job args if available
-        if "SNS_TOPIC_ARN" in args:
-            os.environ["SNS_TOPIC_ARN"] = args["SNS_TOPIC_ARN"]
     except Exception:
         logger.warning("Glue args not available, using default config path")
+
+    # Read optional SNS_TOPIC_ARN (separate try-except since it's optional)
+    try:
+        from awsglue.utils import getResolvedOptions
+        sns_args = getResolvedOptions(sys.argv, ["SNS_TOPIC_ARN"])
+        os.environ["SNS_TOPIC_ARN"] = sns_args["SNS_TOPIC_ARN"]
+        logger.info("SNS topic ARN configured: %s", sns_args["SNS_TOPIC_ARN"])
+    except Exception:
+        logger.info("SNS_TOPIC_ARN not configured, DQ notifications disabled")
 
     logger.info("Config path: %s", config_path)
 

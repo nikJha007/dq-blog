@@ -761,6 +761,11 @@ main() {
     log_info "Stack Name: ${STACK_NAME}"
     log_info "Use Case: ${USE_CASE}"
     log_info "Region: ${REGION}"
+    if [ -n "$NOTIFICATION_EMAILS" ]; then
+        log_info "SNS Emails: ${NOTIFICATION_EMAILS}"
+    else
+        log_info "SNS Emails: (none — set SNS_NOTIFICATION_EMAILS to enable)"
+    fi
     echo ""
 
     check_prerequisites
