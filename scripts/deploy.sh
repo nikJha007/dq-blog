@@ -23,7 +23,6 @@ set -euo pipefail
 STACK_NAME="${STACK_NAME:-dq-etl}"
 REGION="${AWS_REGION:-us-east-1}"
 USE_CASE=""
-NOTIFICATION_EMAILS="${SNS_NOTIFICATION_EMAILS:-}"
 START_GLUE=false
 SKIP_STACK=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -282,11 +281,10 @@ params = [
     {'ParameterKey': 'EnvironmentName', 'ParameterValue': sys.argv[1]},
     {'ParameterKey': 'CreateDMSVPCRole', 'ParameterValue': sys.argv[2]},
     {'ParameterKey': 'DMSTableMappings', 'ParameterValue': sys.argv[3]},
-    {'ParameterKey': 'NotificationEmails', 'ParameterValue': sys.argv[4]},
 ]
-with open(sys.argv[5], 'w') as f:
+with open(sys.argv[4], 'w') as f:
     json.dump(params, f)
-" "$STACK_NAME" "$create_dms_vpc_role" "$dms_mappings" "$NOTIFICATION_EMAILS" "$params_file"
+" "$STACK_NAME" "$create_dms_vpc_role" "$dms_mappings" "$params_file"
 
     stack_status=$(stack_exists || echo "DOES_NOT_EXIST")
 
@@ -761,11 +759,6 @@ main() {
     log_info "Stack Name: ${STACK_NAME}"
     log_info "Use Case: ${USE_CASE}"
     log_info "Region: ${REGION}"
-    if [ -n "$NOTIFICATION_EMAILS" ]; then
-        log_info "SNS Emails: ${NOTIFICATION_EMAILS}"
-    else
-        log_info "SNS Emails: (none — set SNS_NOTIFICATION_EMAILS to enable)"
-    fi
     echo ""
 
     check_prerequisites
@@ -784,32 +777,6 @@ main() {
 
     upload_assets_to_s3
     echo ""
-
-    # Subscribe notification emails to SNS topic (if provided)
-    if [ -n "$NOTIFICATION_EMAILS" ]; then
-        log_step "Subscribing notification emails to DQ alerts topic..."
-        local sns_topic_arn
-        sns_topic_arn=$(get_stack_output "DQAlertsTopicArn")
-        if [ -n "$sns_topic_arn" ]; then
-            IFS=',' read -ra EMAILS <<< "$NOTIFICATION_EMAILS"
-            for email in "${EMAILS[@]}"; do
-                email=$(echo "$email" | xargs)  # trim whitespace
-                if [ -n "$email" ]; then
-                    aws sns subscribe \
-                        --topic-arn "$sns_topic_arn" \
-                        --protocol email \
-                        --notification-endpoint "$email" \
-                        --region "$REGION" > /dev/null 2>&1 && \
-                        log_info "Subscribed: ${email}" || \
-                        log_warn "Failed to subscribe: ${email}"
-                fi
-            done
-            log_info "Check email inboxes to confirm SNS subscriptions"
-        else
-            log_warn "SNS topic ARN not found in stack outputs"
-        fi
-        echo ""
-    fi
 
     start_dms_replication
     echo ""

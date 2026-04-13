@@ -28,6 +28,7 @@ set -euo pipefail
 STACK_NAME="${STACK_NAME:-dq-etl}"
 REGION="${AWS_REGION:-us-east-1}"
 USE_CASE=""
+SNS_EMAILS="${SNS_EMAILS:-}"
 SKIP_TABLES=false
 SKIP_TOPICS=false
 SKIP_DMS=false
@@ -61,6 +62,7 @@ parse_args() {
             -s|--stack-name) STACK_NAME="$2"; shift 2 ;;
             -u|--use-case) USE_CASE="$2"; shift 2 ;;
             -r|--region) REGION="$2"; shift 2 ;;
+            --emails) SNS_EMAILS="$2"; shift 2 ;;
             --skip-tables) SKIP_TABLES=true; shift ;;
             --skip-topics) SKIP_TOPICS=true; shift ;;
             --skip-dms) SKIP_DMS=true; shift ;;
@@ -549,10 +551,50 @@ main() {
     generate_test_data
     echo ""
     
+    subscribe_sns_emails
+    echo ""
+
     display_summary
     
     log_success "Post-deployment setup complete!"
     echo ""
+}
+
+# =============================================================================
+# Step 7: Subscribe SNS Email Notifications (if --emails provided)
+# =============================================================================
+subscribe_sns_emails() {
+    if [ -z "$SNS_EMAILS" ]; then
+        return 0
+    fi
+    
+    log_step "Subscribing emails to DQ alerts SNS topic..."
+    
+    local sns_topic_arn
+    sns_topic_arn=$(get_stack_output "DQAlertsTopicArn")
+    
+    if [ -z "$sns_topic_arn" ]; then
+        log_warn "SNS topic ARN not found in stack outputs"
+        return 0
+    fi
+    
+    IFS=',' read -ra EMAILS <<< "$SNS_EMAILS"
+    for email in "${EMAILS[@]}"; do
+        email=$(echo "$email" | xargs)  # trim whitespace
+        if [ -n "$email" ]; then
+            if aws sns subscribe \
+                --topic-arn "$sns_topic_arn" \
+                --protocol email \
+                --notification-endpoint "$email" \
+                --region "$REGION" > /dev/null 2>&1; then
+                log_success "Subscribed: ${email}"
+            else
+                log_warn "Failed to subscribe: ${email}"
+            fi
+        fi
+    done
+    
+    log_info "Check email inboxes and click 'Confirm subscription' to activate alerts"
 }
 
 main "$@"

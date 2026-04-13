@@ -118,6 +118,7 @@ Parameters:
     Default: ''
     Description: Comma-separated email addresses for DQ failure notifications (leave empty to skip email subscriptions)
 
+
 Conditions:
   ShouldCreateDMSVPCRole: !Equals [!Ref CreateDMSVPCRole, 'true']
 
