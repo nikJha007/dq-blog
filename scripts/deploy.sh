@@ -288,21 +288,54 @@ with open(sys.argv[4], 'w') as f:
 
     stack_status=$(stack_exists || echo "DOES_NOT_EXIST")
 
+    # Upload template to S3 for large template support (>51200 bytes)
+    # For new stacks, create a temp bucket; for existing stacks, use assets bucket
+    local template_url=""
     if [ "$stack_status" = "DOES_NOT_EXIST" ]; then
+        # Create stack using local template (must be under 51200 bytes for create)
+        # If template is too large, create a temp S3 bucket first
+        local template_size
+        template_size=$(wc -c < "$template_file")
+        if [ "$template_size" -gt 51200 ]; then
+            local temp_bucket="${STACK_NAME}-cfn-temp-${RANDOM}"
+            log_info "Template exceeds 51200 bytes, uploading to temporary S3 bucket..."
+            aws s3 mb "s3://${temp_bucket}" --region "$REGION" > /dev/null 2>&1
+            aws s3 cp "$template_file" "s3://${temp_bucket}/template.yaml" --region "$REGION" > /dev/null 2>&1
+            template_url="https://${temp_bucket}.s3.${REGION}.amazonaws.com/template.yaml"
+        fi
+
         log_info "Creating new stack: ${STACK_NAME}"
 
-        aws cloudformation create-stack \
-            --stack-name "$STACK_NAME" \
-            --template-body "file://${template_file}" \
-            --region "$REGION" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --parameters "file://${params_file}" \
-            --tags Key=Project,Value=streaming-etl \
-            --output text > /tmp/stack-output.txt 2>&1 || {
-                log_error "Failed to create stack"
-                cat /tmp/stack-output.txt
-                exit 1
-            }
+        if [ -n "$template_url" ]; then
+            aws cloudformation create-stack \
+                --stack-name "$STACK_NAME" \
+                --template-url "$template_url" \
+                --region "$REGION" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --parameters "file://${params_file}" \
+                --tags Key=Project,Value=streaming-etl \
+                --output text > /tmp/stack-output.txt 2>&1 || {
+                    log_error "Failed to create stack"
+                    cat /tmp/stack-output.txt
+                    aws s3 rb "s3://${temp_bucket}" --force --region "$REGION" > /dev/null 2>&1
+                    exit 1
+                }
+            # Clean up temp bucket after stack creation starts
+            aws s3 rb "s3://${temp_bucket}" --force --region "$REGION" > /dev/null 2>&1 || true
+        else
+            aws cloudformation create-stack \
+                --stack-name "$STACK_NAME" \
+                --template-body "file://${template_file}" \
+                --region "$REGION" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --parameters "file://${params_file}" \
+                --tags Key=Project,Value=streaming-etl \
+                --output text > /tmp/stack-output.txt 2>&1 || {
+                    log_error "Failed to create stack"
+                    cat /tmp/stack-output.txt
+                    exit 1
+                }
+        fi
 
         wait_for_stack "creation"
 
@@ -310,19 +343,40 @@ with open(sys.argv[4], 'w') as f:
         log_info "Stack exists with status: ${stack_status}"
         log_info "Updating stack..."
 
-        aws cloudformation update-stack \
-            --stack-name "$STACK_NAME" \
-            --template-body "file://${template_file}" \
-            --region "$REGION" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --parameters "file://${params_file}" \
-            --output text > /tmp/stack-output.txt 2>&1 || {
-                if grep -q "No updates" /tmp/stack-output.txt; then
-                    log_info "No stack updates needed"
-                else
-                    log_warn "Stack update issue - check /tmp/stack-output.txt"
-                fi
-            }
+        # Upload template to assets bucket for update (no size limit via S3)
+        local assets_bucket
+        assets_bucket=$(get_stack_output "AssetsBucket")
+        if [ -n "$assets_bucket" ]; then
+            aws s3 cp "$template_file" "s3://${assets_bucket}/cloudformation/template.yaml" --region "$REGION" > /dev/null 2>&1
+            local update_template_url="https://${assets_bucket}.s3.${REGION}.amazonaws.com/cloudformation/template.yaml"
+            aws cloudformation update-stack \
+                --stack-name "$STACK_NAME" \
+                --template-url "$update_template_url" \
+                --region "$REGION" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --parameters "file://${params_file}" \
+                --output text > /tmp/stack-output.txt 2>&1 || {
+                    if grep -q "No updates" /tmp/stack-output.txt; then
+                        log_info "No stack updates needed"
+                    else
+                        log_warn "Stack update issue - check /tmp/stack-output.txt"
+                    fi
+                }
+        else
+            aws cloudformation update-stack \
+                --stack-name "$STACK_NAME" \
+                --template-body "file://${template_file}" \
+                --region "$REGION" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --parameters "file://${params_file}" \
+                --output text > /tmp/stack-output.txt 2>&1 || {
+                    if grep -q "No updates" /tmp/stack-output.txt; then
+                        log_info "No stack updates needed"
+                    else
+                        log_warn "Stack update issue - check /tmp/stack-output.txt"
+                    fi
+                }
+        fi
 
         local current_status
         current_status=$(stack_exists)

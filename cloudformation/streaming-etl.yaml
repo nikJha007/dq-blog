@@ -265,8 +265,13 @@ Resources:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
-          CidrIp: 10.0.0.0/16
-          Description: PostgreSQL from VPC
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: PostgreSQL from Lambda
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref DMSSecurityGroup
+          Description: PostgreSQL from DMS
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-rds-sg'
@@ -338,11 +343,36 @@ Resources:
       KeyPolicy:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowRootAccess
+          - Sid: AllowKeyAdministration
             Effect: Allow
             Principal:
               AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
-            Action: 'kms:*'
+            Action:
+              - kms:Create*
+              - kms:Describe*
+              - kms:Enable*
+              - kms:List*
+              - kms:Put*
+              - kms:Update*
+              - kms:Revoke*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+            Resource: '*'
+          - Sid: AllowKeyUsage
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:DescribeKey
             Resource: '*'
           - Sid: AllowMSKAccess
             Effect: Allow
@@ -376,6 +406,10 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${EnvironmentName}-delta-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -386,6 +420,10 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${EnvironmentName}-assets-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -396,6 +434,10 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${EnvironmentName}-quarantine-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -444,6 +486,7 @@ Resources:
       MultiAZ: false
       BackupRetentionPeriod: 1
       DeletionProtection: false
+      StorageEncrypted: true
 
   # ==========================================================================
   # MSK Cluster
@@ -681,10 +724,13 @@ Resources:
                   - sns:Publish
                 Resource: !Ref DQAlertsTopic
 
-  LambdaRole:
+  # ==========================================================================
+  # Per-Lambda IAM Roles (least-privilege)
+  # ==========================================================================
+  SQLRunnerRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${EnvironmentName}-lambda-role'
+      RoleName: !Sub '${EnvironmentName}-sql-runner-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -693,7 +739,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: LambdaVPCAccess
+        - PolicyName: VPCAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -703,7 +749,7 @@ Resources:
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DeleteNetworkInterface
                 Resource: '*'
-        - PolicyName: LambdaLogsAccess
+        - PolicyName: Logs
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -712,22 +758,95 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${EnvironmentName}-*'
-        - PolicyName: LambdaSecretsAccess
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${EnvironmentName}-sql-runner*'
+        - PolicyName: Secrets
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource:
-                  - !Ref RDSSecret
-                  - !Ref MSKSecret
+                Resource: !Ref RDSSecret
+
+  KafkaAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-kafka-admin-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VPCAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${EnvironmentName}-kafka-admin*'
+        - PolicyName: Secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref MSKSecret
               - Effect: Allow
                 Action:
                   - kms:Decrypt
                   - kms:GenerateDataKey
                 Resource: !GetAtt MSKSecretKMSKey.Arn
-        - PolicyName: LambdaS3Access
+        - PolicyName: S3ConfigRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt AssetsBucket.Arn
+                  - !Sub '${AssetsBucket.Arn}/config/*'
+
+  AthenaCreatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-athena-creator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${EnvironmentName}-athena-table-creator*'
+        - PolicyName: S3Access
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -742,7 +861,7 @@ Resources:
                   - !Sub '${AssetsBucket.Arn}/*'
                   - !GetAtt DeltaBucket.Arn
                   - !Sub '${DeltaBucket.Arn}/*'
-        - PolicyName: LambdaAthenaAccess
+        - PolicyName: AthenaGlue
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -759,10 +878,52 @@ Resources:
                   - glue:GetTables
                   - glue:CreateTable
                   - glue:UpdateTable
+                  - glue:CreateDatabase
+                  - glue:DeleteTable
                 Resource:
                   - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
                   - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${EnvironmentName}_db'
                   - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${EnvironmentName}_db/*'
+
+  DataGeneratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-data-generator-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VPCAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+        - PolicyName: Logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${EnvironmentName}-data-generator*'
+        - PolicyName: Secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
 
   # ==========================================================================
   # DMS
@@ -809,7 +970,9 @@ Resources:
 
   DMSSourceEndpoint:
     Type: AWS::DMS::Endpoint
-    DependsOn: RDSInstance
+    DependsOn:
+      - RDSInstance
+      - RDSSecret
     Properties:
       EndpointIdentifier: !Sub '${EnvironmentName}-source-postgres'
       EndpointType: source
@@ -818,7 +981,7 @@ Resources:
       Port: 5432
       DatabaseName: etldb
       Username: postgres
-      Password: !Ref RDSPassword
+      Password: !Sub '{{resolve:secretsmanager:${RDSSecret}:SecretString:password}}'
       SslMode: require
 
   DMSTargetEndpoint:
@@ -932,7 +1095,7 @@ Resources:
       Description: SQL runner utility for RDS PostgreSQL (psycopg2 layer added post-deploy)
       Runtime: python3.10
       Handler: index.lambda_handler
-      Role: !GetAtt LambdaRole.Arn
+      Role: !GetAtt SQLRunnerRole.Arn
       Timeout: 60
       MemorySize: 256
       Code:
@@ -1016,7 +1179,7 @@ Resources:
       Description: Kafka admin utility for topic management (kafka-python layer added post-deploy)
       Runtime: python3.10
       Handler: index.lambda_handler
-      Role: !GetAtt LambdaRole.Arn
+      Role: !GetAtt KafkaAdminRole.Arn
       Timeout: 300
       MemorySize: 256
       Code:
@@ -1170,7 +1333,7 @@ Resources:
       Description: Creates Athena tables for Delta Lake data (PyYAML layer added post-deploy)
       Runtime: python3.10
       Handler: index.lambda_handler
-      Role: !GetAtt LambdaRole.Arn
+      Role: !GetAtt AthenaCreatorRole.Arn
       Timeout: 300
       MemorySize: 256
       Code:
@@ -1339,7 +1502,7 @@ Resources:
       Description: Data generator for test/demo data (code + psycopg2 layer updated by deploy.sh)
       Runtime: python3.10
       Handler: index.lambda_handler
-      Role: !GetAtt LambdaRole.Arn
+      Role: !GetAtt DataGeneratorRole.Arn
       Timeout: 900
       MemorySize: 512
       Code:
