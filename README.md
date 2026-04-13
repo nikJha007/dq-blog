@@ -167,17 +167,14 @@ Teardown when done:
 │   ├── deploy.sh                       # Validate, compile, deploy stack, upload assets
 │   ├── post-deploy.sh                  # Create tables/topics, start DMS/Glue, seed data
 │   ├── teardown.sh                     # Full resource cleanup
-│   └── create-athena-tables.sh
+│   └── setup-ec2.sh                    # One-command EC2 setup (Python 3.10, AWS CLI, PyYAML)
 ├── src/
 │   ├── glue_streaming_job.py           # Main Glue streaming job (domain-agnostic)
 │   ├── deequ_analyzer.py               # Deequ DQ metrics analyzer
 │   ├── config_validator.py             # Config validation
 │   ├── config_compiler.py              # Compiles config → DMS mappings, DDL, CFn params
-│   ├── test_config_compiler.py         # Unit tests
 │   └── libs/                           # Pre-downloaded wheels and JARs
-└── docs/
-    ├── architecture.md
-    └── deployment-notes.md
+└── _archive/                           # Old files from pre-framework era (safe to delete)
 ```
 
 ## Configuration
