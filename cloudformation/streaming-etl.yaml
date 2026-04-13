@@ -1416,12 +1416,4 @@ Outputs:
 
   NextSteps:
     Description: Post-deployment steps
-    Value: |
-      1. Upload scripts to S3: aws s3 sync src/ s3://<AssetsBucket>/scripts/
-      2. Upload config to S3: aws s3 cp config/tables.yaml s3://<AssetsBucket>/config/
-      3. Upload Deequ libs: aws s3 cp libs/ s3://<AssetsBucket>/libs/ --recursive
-      4. Create RDS tables: aws lambda invoke --function-name <SQLRunnerLambda> --payload '{"sql":"..."}' out.json
-      5. Create Kafka topics: aws lambda invoke --function-name <KafkaAdminLambda> --payload '{"action":"sync_from_config"}' out.json
-      6. Start DMS task: aws dms start-replication-task --replication-task-arn <DMSTaskArn> --start-replication-task-type start-replication
-      7. Start Glue job: aws glue start-job-run --job-name <GlueJobName>
-      8. Create Athena tables: aws lambda invoke --function-name <AthenaTableCreatorLambda> out.json
+    Value: "Run: ./scripts/post-deploy.sh --stack-name <StackName> --use-case <UseCase> --region <Region>"

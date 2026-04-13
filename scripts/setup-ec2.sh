@@ -43,7 +43,7 @@ else
     curl -O https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
     tar xzf Python-3.10.14.tgz
     cd Python-3.10.14
-    ./configure --enable-optimizations
+    ./configure
     make -j$(nproc)
     sudo make altinstall
     cd ..
