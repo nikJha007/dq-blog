@@ -410,6 +410,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt MSKSecretKMSKey.Arn
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -424,6 +425,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt MSKSecretKMSKey.Arn
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -438,6 +440,7 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt MSKSecretKMSKey.Arn
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -980,7 +983,7 @@ Resources:
       ServerName: !GetAtt RDSInstance.Endpoint.Address
       Port: 5432
       DatabaseName: etldb
-      Username: postgres
+      Username: !Sub '{{resolve:secretsmanager:${RDSSecret}:SecretString:username}}'
       Password: !Sub '{{resolve:secretsmanager:${RDSSecret}:SecretString:password}}'
       SslMode: require
 

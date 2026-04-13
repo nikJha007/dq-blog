@@ -320,8 +320,6 @@ with open(sys.argv[4], 'w') as f:
                     aws s3 rb "s3://${temp_bucket}" --force --region "$REGION" > /dev/null 2>&1
                     exit 1
                 }
-            # Clean up temp bucket after stack creation starts
-            aws s3 rb "s3://${temp_bucket}" --force --region "$REGION" > /dev/null 2>&1 || true
         else
             aws cloudformation create-stack \
                 --stack-name "$STACK_NAME" \
@@ -339,6 +337,12 @@ with open(sys.argv[4], 'w') as f:
 
         wait_for_stack "creation"
 
+        # Clean up temp bucket AFTER stack creation completes (CFn needs template accessible during creation)
+        if [ -n "$template_url" ]; then
+            aws s3 rb "s3://${temp_bucket}" --force --region "$REGION" > /dev/null 2>&1 || true
+            log_info "Cleaned up temporary template bucket"
+        fi
+
     elif [[ "$stack_status" == *"COMPLETE"* ]] && [[ "$stack_status" != *"ROLLBACK"* ]]; then
         log_info "Stack exists with status: ${stack_status}"
         log_info "Updating stack..."
@@ -347,7 +351,10 @@ with open(sys.argv[4], 'w') as f:
         local assets_bucket
         assets_bucket=$(get_stack_output "AssetsBucket")
         if [ -n "$assets_bucket" ]; then
-            aws s3 cp "$template_file" "s3://${assets_bucket}/cloudformation/template.yaml" --region "$REGION" > /dev/null 2>&1
+            aws s3 cp "$template_file" "s3://${assets_bucket}/cloudformation/template.yaml" --region "$REGION" > /dev/null 2>&1 || {
+                log_error "Failed to upload template to assets bucket"
+                exit 1
+            }
             local update_template_url="https://${assets_bucket}.s3.${REGION}.amazonaws.com/cloudformation/template.yaml"
             aws cloudformation update-stack \
                 --stack-name "$STACK_NAME" \
