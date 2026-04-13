@@ -424,16 +424,29 @@ start_glue_job() {
             echo ""
             log_warn "Timeout waiting for Glue job to stop. Attempting start anyway..."
         fi
+
+        # Glue needs a brief pause after stop before accepting a new start
+        log_info "Waiting 15s for Glue to finalize stop..."
+        sleep 15
     fi
     
     log_info "Starting Glue job: ${glue_job_name}"
-    if aws glue start-job-run \
-        --job-name "$glue_job_name" \
-        --region "$REGION" > /dev/null 2>&1; then
-        log_success "Glue job started"
-    else
-        log_error "Failed to start Glue job. It may still be stopping. Retry in a minute."
-    fi
+    local start_attempts=0
+    local max_attempts=3
+    while [ $start_attempts -lt $max_attempts ]; do
+        if aws glue start-job-run \
+            --job-name "$glue_job_name" \
+            --region "$REGION" > /dev/null 2>&1; then
+            log_success "Glue job started"
+            return 0
+        fi
+        start_attempts=$((start_attempts + 1))
+        if [ $start_attempts -lt $max_attempts ]; then
+            log_warn "Start attempt ${start_attempts} failed, retrying in 15s..."
+            sleep 15
+        fi
+    done
+    log_error "Failed to start Glue job after ${max_attempts} attempts"
 }
 
 # =============================================================================

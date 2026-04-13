@@ -119,7 +119,7 @@ Set your variables:
 STACK="my-etl-stack"
 REGION="ap-south-1"
 USE_CASE="vehicle-telemetry"   # Options: vehicle-telemetry | healthcare-iot
-SNS_EMAILS=""                  # Optional: comma-separated emails for DQ failure alerts
+SNS_EMAILS=""                  # Optional: comma-separated emails for DQ failure alerts eg: abc@yyy.com,def@zzz.com
 ```
 
 Deploy the stack:
@@ -128,16 +128,10 @@ Deploy the stack:
 ./scripts/deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
 ```
 
-Run post-deploy setup (creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data):
+Run post-deploy setup (creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data, subscribes SNS emails):
 
 ```bash
-./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
-```
-
-Run post-deploy setup (creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data):
-
-```bash
-./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
+./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION --emails "$SNS_EMAILS"
 ```
 
 Generate more data:
