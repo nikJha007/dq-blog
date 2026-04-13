@@ -887,6 +887,15 @@ Resources:
                   - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
                   - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${EnvironmentName}_db'
                   - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${EnvironmentName}_db/*'
+        - PolicyName: KMSDecrypt
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt MSKSecretKMSKey.Arn
 
   DataGeneratorRole:
     Type: AWS::IAM::Role

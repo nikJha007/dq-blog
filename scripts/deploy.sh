@@ -839,8 +839,8 @@ main() {
     upload_assets_to_s3
     echo ""
 
-    start_dms_replication
-    echo ""
+    # DMS is started by post-deploy.sh after RDS tables are created
+    # Starting it here would fail with "no tables found"
 
     start_glue_job
     echo ""

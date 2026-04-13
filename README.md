@@ -88,7 +88,7 @@ sudo dnf install -y git && git --version
 git clone https://github.com/nikJha007/dq-blog.git && cd dq-blog && chmod +x scripts/*.sh
 ```
 
-### 3. Run EC2 setup (installs Python 3.10, AWS CLI, PyYAML)
+### 3. Run EC2 setup (installs Python 3.10, other dependencies). Takes ~3mins to complete
 
 ```bash
 ./scripts/setup-ec2.sh
@@ -122,7 +122,7 @@ USE_CASE="vehicle-telemetry"   # Options: vehicle-telemetry | healthcare-iot
 SNS_EMAILS=""                  # Optional: comma-separated emails for DQ failure alerts eg: abc@yyy.com,def@zzz.com
 ```
 
-Deploy the stack:
+Deploy the stack (takes ~35-40 mins):
 
 ```bash
 ./scripts/deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
