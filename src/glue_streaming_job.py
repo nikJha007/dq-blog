@@ -577,16 +577,38 @@ def apply_transforms(dataframe: DataFrame, table_config: Dict,
 
 
 def write_to_quarantine(failed_df: DataFrame, table_name: str,
-                        quarantine_path: str) -> None:
-    """Write failed records to quarantine bucket."""
+                        quarantine_path: str) -> Dict[str, Any]:
+    """Write failed records to quarantine bucket with hourly run_date partition.
+    
+    Returns quarantine metadata dict for SNS notification, or empty dict if nothing quarantined.
+    """
     if failed_df.isEmpty():
-        return
+        return {}
 
-    path = f"{quarantine_path}{table_name}/"
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    run_date = now.strftime("%Y-%m-%dT%H:00:00")
+    path = "{}run_date={}/{}/".format(quarantine_path, run_date, table_name)
     count = failed_df.count()
+
+    # Collect which rules failed (distinct _failed_rule values)
+    failed_rules = []
+    if "_failed_rule" in failed_df.columns:
+        rule_rows = failed_df.select("_failed_rule").distinct().collect()
+        failed_rules = [row["_failed_rule"] for row in rule_rows if row["_failed_rule"]]
+
     failed_df.withColumn("_quarantined_at", current_timestamp()) \
         .write.mode("append").parquet(path)
     logger.info("[%s] QUARANTINED %d records to %s", table_name, count, path)
+
+    return {
+        "table": table_name,
+        "quarantined_count": count,
+        "failed_rules": failed_rules,
+        "s3_path": path,
+        "timestamp": now.isoformat(),
+    }
 
 
 def add_scd2_columns(dataframe: DataFrame) -> DataFrame:
@@ -597,6 +619,68 @@ def add_scd2_columns(dataframe: DataFrame) -> DataFrame:
         .withColumn("_effective_to", lit(None).cast("timestamp")) \
         .withColumn("_is_current", lit(True)) \
         .withColumn("_ingested_at", now)
+
+
+def send_quarantine_notification(
+    quarantine_info: Dict[str, Any],
+    batch_id: int,
+    total_records: int,
+    config: Dict[str, Any],
+) -> None:
+    """Send SNS notification for quarantined records."""
+    sns_topic_arn = os.environ.get("SNS_TOPIC_ARN", "")
+    if not sns_topic_arn or not quarantine_info:
+        return
+
+    try:
+        stack_name = config.get("_stack_name", "unknown")
+        table = quarantine_info["table"]
+        count = quarantine_info["quarantined_count"]
+        rules = quarantine_info.get("failed_rules", [])
+        s3_path = quarantine_info["s3_path"]
+        ts = quarantine_info["timestamp"]
+
+        rules_str = ", ".join(rules) if rules else "unknown"
+
+        body = (
+            "Stack: {stack}\n"
+            "Batch ID: {batch}\n"
+            "Timestamp: {ts}\n"
+            "\n"
+            "QUARANTINE SUMMARY\n"
+            "{sep}\n"
+            "Table: {table}\n"
+            "  Total Records in Batch: {total}\n"
+            "  Quarantined: {count} records\n"
+            "  Failed Rules: {rules}\n"
+            "  S3 Path: {path}\n"
+            "{sep}\n"
+        ).format(
+            stack=stack_name,
+            batch=batch_id,
+            ts=ts,
+            sep="─" * 50,
+            table=table,
+            total=total_records,
+            count=count,
+            rules=rules_str,
+            path=s3_path,
+        )
+
+        subject = "DQ Failure Notification — {}".format(stack_name)
+        # SNS subject max 100 chars
+        if len(subject) > 100:
+            subject = subject[:97] + "..."
+
+        sns = boto3.client("sns")
+        sns.publish(
+            TopicArn=sns_topic_arn,
+            Subject=subject,
+            Message=body,
+        )
+        logger.info("[%s] SNS notification sent: %d quarantined records", table, count)
+    except Exception as exc:
+        logger.warning("Failed to send SNS notification: %s", exc)
 
 
 def deduplicate_by_pk(dataframe: DataFrame, primary_key: str) -> DataFrame:
@@ -646,8 +730,11 @@ def process_batch(batch_df: DataFrame, batch_id: int, table_config: Dict,
     # Step 3: Apply DQ rules
     valid_df, failed_df = apply_dq_rules(parsed_df, table_config, dq_registry, table_name)
     
+    total_records = parsed_df.count()
     if quarantine_path and not failed_df.isEmpty():
-        write_to_quarantine(failed_df, table_name, quarantine_path)
+        quarantine_info = write_to_quarantine(failed_df, table_name, quarantine_path)
+        if quarantine_info:
+            send_quarantine_notification(quarantine_info, batch_id, total_records, config)
 
     if valid_df.count() == 0:
         logger.info("[%s] No valid records after DQ", table_name)
@@ -753,6 +840,9 @@ def main():
         from awsglue.utils import getResolvedOptions
         args = getResolvedOptions(sys.argv, ["JOB_NAME", "CONFIG_PATH"])
         config_path = args["CONFIG_PATH"]
+        # Set SNS topic ARN from Glue job args if available
+        if "SNS_TOPIC_ARN" in args:
+            os.environ["SNS_TOPIC_ARN"] = args["SNS_TOPIC_ARN"]
     except Exception:
         logger.warning("Glue args not available, using default config path")
 

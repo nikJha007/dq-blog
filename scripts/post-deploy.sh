@@ -392,17 +392,46 @@ start_glue_job() {
             --job-name "$glue_job_name" \
             --job-run-ids $running_jobs \
             --region "$REGION" > /dev/null 2>&1 || true
-        log_info "Waiting 30s for job to stop..."
-        sleep 30
+        
+        # Wait for job to actually stop (up to 3 minutes)
+        log_info "Waiting for Glue job to stop..."
+        local max_wait=180
+        local elapsed=0
+        local interval=15
+        while [ $elapsed -lt $max_wait ]; do
+            local current_state
+            current_state=$(aws glue get-job-runs \
+                --job-name "$glue_job_name" \
+                --region "$REGION" \
+                --query "JobRuns[0].JobRunState" \
+                --output text 2>/dev/null || echo "UNKNOWN")
+            
+            echo -ne "\r  Glue job state: ${current_state} (${elapsed}s)    "
+            
+            if [ "$current_state" != "RUNNING" ] && [ "$current_state" != "STOPPING" ]; then
+                echo ""
+                log_info "Glue job stopped (state: ${current_state})"
+                break
+            fi
+            
+            sleep $interval
+            elapsed=$((elapsed + interval))
+        done
+        
+        if [ $elapsed -ge $max_wait ]; then
+            echo ""
+            log_warn "Timeout waiting for Glue job to stop. Attempting start anyway..."
+        fi
     fi
     
     log_info "Starting Glue job: ${glue_job_name}"
-    aws glue start-job-run \
+    if aws glue start-job-run \
         --job-name "$glue_job_name" \
-        --region "$REGION" > /dev/null 2>&1 || {
-            log_warn "Failed to start Glue job"
-        }
-    log_success "Glue job started"
+        --region "$REGION" > /dev/null 2>&1; then
+        log_success "Glue job started"
+    else
+        log_error "Failed to start Glue job. It may still be stopping. Retry in a minute."
+    fi
 }
 
 # =============================================================================

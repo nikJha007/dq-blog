@@ -6,26 +6,53 @@ Config-driven CDC streaming ETL on AWS. Define tables, DQ rules, transforms, and
 
 ## Architecture
 
+Each deployment creates a fully isolated AWS stack. The same framework code powers any use case — only the YAML config changes.
+
+```mermaid
+flowchart TD
+    subgraph STACK[" "]
+        direction TB
+
+        subgraph INGESTION["Data Ingestion"]
+            direction LR
+            RDS["RDS PostgreSQL\nINSERTs, UPDATEs, DELETEs"] -->|WAL CDC| DMS["AWS DMS"]
+            DMS --> MSK["Amazon MSK\nKafka\n1 topic per table"]
+        end
+
+        subgraph PROCESSING["Glue Streaming"]
+            direction TB
+            READ_MSK["0. Read from MSK"]
+            PARSE["1. Parse DMS Envelope"]
+            DEEQU_STEP["2. Deequ Analyzers"]
+            DQ_STEP["3. Apply DQ Rules"]
+            TX_STEP["4. Apply Transforms"]
+            SCD2_STEP["5. Add SCD2 Columns + Deduplicate"]
+            MERGE_STEP["6. Delta MERGE — SCD Type 2"]
+            READ_MSK --> PARSE --> DEEQU_STEP --> DQ_STEP --> TX_STEP --> SCD2_STEP --> MERGE_STEP
+        end
+
+        subgraph OUTPUTS["Data Outputs"]
+            direction LR
+            DELTA["Delta Lake S3\nSCD2 History\n+ Symlink Manifests"]
+            QUARANTINE["Quarantine S3\nPartitioned:\nrun_date=YYYY-MM-DDTHH:00:00\n/table_name/"]
+            METRICS["DQ Metrics\nDelta Lake"]
+        end
+
+        MSK --> READ_MSK
+        MERGE_STEP --> DELTA
+        DQ_STEP -->|"Failed records\nseverity=error"| QUARANTINE
+        DEEQU_STEP --> METRICS
+        QUARANTINE --> SNS["SNS Notifications\ntable, count, rules, S3 path"]
+        DELTA --> ATHENA["Amazon Athena\nSQL Queries"]
+    end
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  RDS PostgreSQL │────▶│   AWS DMS       │────▶│   Amazon MSK    │
-│  (Source DB)    │ CDC │ (CDC Capture)   │     │ (Kafka Topics)  │
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                                                         ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Amazon Athena  │◀────│   Delta Lake    │◀────│  Glue Streaming │
-│  (Query Layer)  │     │   (S3 Storage)  │     │  (Processing)   │
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                              ┌───────────────────────────┼───────────────────────────┐
-                              │                           │                           │
-                              ▼                           ▼                           ▼
-                     ┌─────────────────┐        ┌─────────────────┐        ┌─────────────────┐
-                     │   Quarantine    │        │   DQ Metrics    │        │  SCD2 History   │
-                     │   (Failed DQ)   │        │   (Deequ)       │        │  (Delta Lake)   │
-                     └─────────────────┘        └─────────────────┘        └─────────────────┘
-```
+
+**How it works:**
+- Write a `tables.yaml` — define your tables, schemas, DQ rules, transforms, and Deequ checks
+- Run `deploy.sh` — validates config, compiles DMS mappings + RDS DDL + CloudFormation params, deploys a complete isolated stack
+- Data flows automatically: RDS → DMS (CDC) → MSK (Kafka) → Glue 7-step pipeline → Delta Lake
+- Failed DQ records are quarantined to S3 (partitioned by hour + table), with SNS email alerts
+- Query results in Athena. Each stack is fully independent — deploy multiple use cases side by side.
 
 ## Features
 
@@ -44,30 +71,30 @@ Config-driven CDC streaming ETL on AWS. Define tables, DQ rules, transforms, and
 
 ## Prerequisites
 
-- AWS CLI v2 configured
-- Python 3.10
 - AWS account with permissions for CloudFormation, RDS, DMS, MSK, Glue, S3, IAM, Lambda, Secrets Manager, Athena, KMS
+- EC2 instance running Amazon Linux 2023 (or any Linux with git)
 
-## EC2 Setup (Amazon Linux 2023)
+## Getting Started
+
+### 1. Install git
 
 ```bash
-# Install system dependencies
-sudo dnf install -y git curl unzip gcc openssl-devel bzip2-devel libffi-devel zlib-devel --allowerasing
-
-# Install Python 3.10 (not available via dnf on Amazon Linux 2023)
-curl -O https://www.python.org/ftp/python/3.10.14/Python-3.10.14.tgz
-tar xzf Python-3.10.14.tgz
-cd Python-3.10.14 && ./configure --enable-optimizations && make -j$(nproc) && sudo make altinstall && cd ..
-rm -rf Python-3.10.14 Python-3.10.14.tgz
-
-# Install AWS CLI v2 (if not pre-installed)
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" 
-unzip -q awscliv2.zip && sudo ./aws/install && rm -rf aws awscliv2.zip
-
-# Verify
-git --version && python3.10 --version && aws --version
+sudo dnf install -y git
 ```
-### AWS Credentials
+
+### 2. Clone the repo
+
+```bash
+git clone https://github.com/nikJha007/dq-blog.git && cd dq-blog && chmod +x scripts/*.sh
+```
+
+### 3. Run EC2 setup (installs Python 3.10, AWS CLI, PyYAML)
+
+```bash
+./scripts/setup-ec2.sh
+```
+
+### 4. Configure AWS credentials
 
 Option 1 — IAM Instance Profile (recommended): attach an IAM role with the required permissions to your EC2 instance.
 
@@ -84,43 +111,40 @@ Verify:
 aws sts get-caller-identity
 ```
 
-## Quick Start
+### 5. Deploy
+
+Set your variables:
 
 ```bash
-# Clone and prepare
-git clone https://github.com/nikJha007/dq-blog.git
-cd dq-blog
-chmod +x scripts/*.sh
-
-# Configure your stack name and region
 STACK="my-etl-stack"
-REGION="ap-southeast-1"
+REGION="ap-south-1"
+USE_CASE="vehicle-telemetry"   # Options: vehicle-telemetry | healthcare-iot
+SNS_NOTIFICATION_EMAILS=""     # Optional: comma-separated emails for DQ failure alerts (e.g., "a@x.com,b@x.com")
+```
 
-# Validates config, compiles to deployment artifacts, deploys CloudFormation stack, uploads all assets to S3
-./scripts/deploy.sh --stack-name $STACK --use-case vehicle-telemetry --region $REGION
+Deploy the stack:
 
-  # OR
+```bash
+./scripts/deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
+```
 
-./scripts/deploy.sh --stack-name $STACK --use-case healthcare-iot --region $REGION
+Run post-deploy setup (creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data):
 
-# Creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data
-./scripts/post-deploy.sh --stack-name $STACK --use-case vehicle-telemetry --region $REGION
+```bash
+./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
+```
 
-  # OR
+Generate more data:
 
-./scripts/post-deploy.sh --stack-name $STACK --use-case healthcare-iot --region $REGION
+```bash
+./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION \
+  --skip-tables --skip-topics --skip-dms --skip-glue
+```
 
-    # Generate more data:
-    ./scripts/post-deploy.sh --stack-name $STACK --use-case healthcare-iot --region $REGION \
-      --skip-tables --skip-topics --skip-dms --skip-glue
+Teardown when done:
 
-
-# Teardown when done — stops all services, empties buckets, deletes the stack
+```bash
 ./scripts/teardown.sh --stack-name $STACK --region $REGION --force
-
-
-
-
 ```
 
 ## Project Structure
