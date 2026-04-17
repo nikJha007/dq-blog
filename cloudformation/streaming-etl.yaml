@@ -485,11 +485,8 @@ Resources:
             Action: s3:PutObject
             Resource: !Sub '${S3AccessLogsBucket.Arn}/*'
             Condition:
-              ArnLike:
-                aws:SourceArn:
-                  - !GetAtt DeltaBucket.Arn
-                  - !GetAtt AssetsBucket.Arn
-                  - !GetAtt QuarantineBucket.Arn
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
           - Sid: DenyNonSSL
             Effect: Deny
             Principal: '*'
@@ -885,8 +882,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DeleteNetworkInterface
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DescribeSecurityGroups
                   - ec2:DescribeSubnets
@@ -894,6 +889,11 @@ Resources:
                   - ec2:DescribeVpcEndpoints
                   - ec2:DescribeRouteTables
                   - ec2:DescribeVpcAttribute
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
                   - ec2:CreateTags
                   - ec2:DeleteTags
                 Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
@@ -904,6 +904,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - kafka:ListClusters
+                Resource: '*'
+              - Effect: Allow
+                Action:
                   - kafka:GetBootstrapBrokers
                   - kafka:DescribeCluster
                 Resource: !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:cluster/${EnvironmentName}-msk/*'
@@ -937,8 +940,11 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
                   - ec2:DeleteNetworkInterface
                 Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: Logs
@@ -977,8 +983,11 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
                   - ec2:DeleteNetworkInterface
                 Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: Logs
@@ -1104,8 +1113,11 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
                   - ec2:DeleteNetworkInterface
                 Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: Logs
