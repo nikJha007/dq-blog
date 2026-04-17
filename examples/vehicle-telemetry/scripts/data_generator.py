@@ -17,6 +17,7 @@ import json
 import math
 import os
 import random
+import secrets
 import string
 import time
 from datetime import datetime, timedelta, timezone
@@ -124,17 +125,18 @@ def utc_now() -> datetime:
 # ---------------------------------------------------------------------------
 
 def _generate_vin() -> str:
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=17))
+    chars = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(chars) for _ in range(17))
 
 
 def _generate_plate() -> str:
-    letters = "".join(random.choices(string.ascii_uppercase, k=3))
-    return f"{letters}-{random.randint(1000, 9999)}"
+    letters = "".join(secrets.choice(string.ascii_uppercase) for _ in range(3))
+    return f"{letters}-{secrets.randbelow(9000) + 1000}"
 
 
 def _generate_employee_id() -> str:
     """Generate a valid employee ID matching ^DRV\\d{5}$."""
-    return f"DRV{random.randint(10000, 99999)}"
+    return f"DRV{secrets.randbelow(90000) + 10000}"
 
 
 def _init_vehicle_state(zone: str = "manhattan") -> Dict[str, Any]:

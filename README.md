@@ -113,7 +113,7 @@ aws sts get-caller-identity
 
 ### 5. Deploy
 
-Set your variables:
+#### Set your variables:
 
 ```bash
 STACK="my-etl-stack"
@@ -122,26 +122,26 @@ USE_CASE="vehicle-telemetry"   # Options: vehicle-telemetry | healthcare-iot
 SNS_EMAILS=""                  # Optional: comma-separated emails for DQ failure alerts eg: abc@yyy.com,def@zzz.com
 ```
 
-Deploy the stack (takes ~35-40 mins):
+#### Deploy the stack (takes ~35-40 mins):
 
 ```bash
 ./scripts/deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION
 ```
 
-Run post-deploy setup (creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data, subscribes SNS emails):
+#### Run post-deploy setup (creates RDS tables, Kafka topics, starts DMS + Glue, creates Athena tables, seeds test data, subscribes SNS emails):
 
 ```bash
 ./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION --emails "$SNS_EMAILS"
 ```
 
-Generate more data:
+#### Generate more data:
 
 ```bash
 ./scripts/post-deploy.sh --stack-name $STACK --use-case $USE_CASE --region $REGION \
   --skip-tables --skip-topics --skip-dms --skip-glue
 ```
 
-Teardown when done:
+#### Teardown when done:
 
 ```bash
 ./scripts/teardown.sh --stack-name $STACK --region $REGION --force
@@ -174,7 +174,7 @@ Teardown when done:
 │   ├── config_validator.py             # Config validation
 │   ├── config_compiler.py              # Compiles config → DMS mappings, DDL, CFn params
 │   └── libs/                           # Pre-downloaded wheels and JARs
-└── _archive/                           # Old files from pre-framework era (safe to delete)
+└──
 ```
 
 ## Configuration

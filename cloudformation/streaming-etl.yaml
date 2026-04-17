@@ -136,6 +136,47 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-vpc'
 
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref VPCFlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogRole.Arn
+
+  VPCFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vpc/flowlogs/${EnvironmentName}'
+      RetentionInDays: 14
+
+  VPCFlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-vpc-flowlog-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FlowLogWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vpc/flowlogs/${EnvironmentName}*'
+
   InternetGateway:
     Type: AWS::EC2::InternetGateway
 
@@ -171,7 +212,7 @@ Resources:
       VpcId: !Ref VPC
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.0.101.0/24
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-public-1'
@@ -243,8 +284,13 @@ Resources:
         - IpProtocol: tcp
           FromPort: 9096
           ToPort: 9096
-          CidrIp: 10.0.0.0/16
-          Description: SASL/SCRAM from VPC
+          SourceSecurityGroupId: !Ref GlueSecurityGroup
+          Description: SASL/SCRAM from Glue
+        - IpProtocol: tcp
+          FromPort: 9096
+          ToPort: 9096
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: SASL/SCRAM from Lambda
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-msk-sg'
@@ -253,8 +299,11 @@ Resources:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref MSKSecurityGroup
-      IpProtocol: '-1'
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
       SourceSecurityGroupId: !Ref MSKSecurityGroup
+      Description: Inter-broker communication
 
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -289,8 +338,11 @@ Resources:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref GlueSecurityGroup
-      IpProtocol: '-1'
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
       SourceSecurityGroupId: !Ref GlueSecurityGroup
+      Description: Glue inter-node communication
 
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -390,6 +442,7 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub '${EnvironmentName}/rds/credentials'
+      KmsKeyId: !Ref MSKSecretKMSKey
       SecretString: !Sub '{"username":"postgres","password":"${RDSPassword}"}'
 
   MSKSecret:
@@ -402,8 +455,55 @@ Resources:
   # ==========================================================================
   # S3 Buckets
   # ==========================================================================
+  S3AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${EnvironmentName}-access-logs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${S3AccessLogsBucket.Arn}/*'
+            Condition:
+              ArnLike:
+                aws:SourceArn:
+                  - !GetAtt DeltaBucket.Arn
+                  - !GetAtt AssetsBucket.Arn
+                  - !GetAtt QuarantineBucket.Arn
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt S3AccessLogsBucket.Arn
+              - !Sub '${S3AccessLogsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
   DeltaBucket:
     Type: AWS::S3::Bucket
+    DependsOn: S3AccessLogsBucketPolicy
     Properties:
       BucketName: !Sub '${EnvironmentName}-delta-${AWS::AccountId}'
       BucketEncryption:
@@ -416,9 +516,33 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3AccessLogsBucket
+        LogFilePrefix: delta-logs/
+
+  DeltaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DeltaBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DeltaBucket.Arn
+              - !Sub '${DeltaBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
 
   AssetsBucket:
     Type: AWS::S3::Bucket
+    DependsOn: S3AccessLogsBucketPolicy
     Properties:
       BucketName: !Sub '${EnvironmentName}-assets-${AWS::AccountId}'
       BucketEncryption:
@@ -431,9 +555,33 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3AccessLogsBucket
+        LogFilePrefix: assets-logs/
+
+  AssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AssetsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt AssetsBucket.Arn
+              - !Sub '${AssetsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
 
   QuarantineBucket:
     Type: AWS::S3::Bucket
+    DependsOn: S3AccessLogsBucketPolicy
     Properties:
       BucketName: !Sub '${EnvironmentName}-quarantine-${AWS::AccountId}'
       BucketEncryption:
@@ -446,6 +594,29 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3AccessLogsBucket
+        LogFilePrefix: quarantine-logs/
+
+  QuarantineBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref QuarantineBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt QuarantineBucket.Arn
+              - !Sub '${QuarantineBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
 
   # ==========================================================================
   # RDS PostgreSQL
@@ -486,10 +657,12 @@ Resources:
       VPCSecurityGroups:
         - !Ref RDSSecurityGroup
       PubliclyAccessible: false
-      MultiAZ: false
+      MultiAZ: true
       BackupRetentionPeriod: 1
       DeletionProtection: false
       StorageEncrypted: true
+      KmsKeyId: !GetAtt MSKSecretKMSKey.Arn
+      EnableIAMDatabaseAuthentication: true
 
   # ==========================================================================
   # MSK Cluster
@@ -536,6 +709,17 @@ Resources:
         EncryptionInTransit:
           ClientBroker: TLS
           InCluster: true
+      LoggingInfo:
+        BrokerLogs:
+          CloudWatchLogs:
+            Enabled: true
+            LogGroup: !Ref MSKLogGroup
+
+  MSKLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/msk/${EnvironmentName}'
+      RetentionInDays: 14
 
   MSKScramSecretAssociation:
     Type: AWS::MSK::BatchScramSecret
@@ -566,7 +750,7 @@ Resources:
                 Action:
                   - kafka:GetBootstrapBrokers
                   - kafka:DescribeCluster
-                Resource: '*'
+                Resource: !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:cluster/${EnvironmentName}-msk/*'
         - PolicyName: Logs
           PolicyDocument:
             Version: '2012-10-17'
@@ -576,7 +760,7 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: '*'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${EnvironmentName}-msk-bootstrap*'
 
   MSKBootstrapFunction:
     Type: AWS::Lambda::Function
@@ -656,8 +840,13 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref MSKSecret
+                  - !Ref RDSSecret
+              - Effect: Allow
+                Action:
                   - secretsmanager:ListSecrets
-                Resource: '*'
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*'
               - Effect: Allow
                 Action:
                   - kms:Decrypt
@@ -707,7 +896,7 @@ Resources:
                   - ec2:DescribeVpcAttribute
                   - ec2:CreateTags
                   - ec2:DeleteTags
-                Resource: '*'
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: GlueMSKAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -717,7 +906,7 @@ Resources:
                   - kafka:ListClusters
                   - kafka:GetBootstrapBrokers
                   - kafka:DescribeCluster
-                Resource: '*'
+                Resource: !Sub 'arn:aws:kafka:${AWS::Region}:${AWS::AccountId}:cluster/${EnvironmentName}-msk/*'
         - PolicyName: GlueSNSAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -751,7 +940,7 @@ Resources:
                   - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DeleteNetworkInterface
-                Resource: '*'
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: Logs
           PolicyDocument:
             Version: '2012-10-17'
@@ -791,7 +980,7 @@ Resources:
                   - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DeleteNetworkInterface
-                Resource: '*'
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: Logs
           PolicyDocument:
             Version: '2012-10-17'
@@ -873,7 +1062,7 @@ Resources:
                   - athena:StartQueryExecution
                   - athena:GetQueryExecution
                   - athena:GetQueryResults
-                Resource: '*'
+                Resource: !Sub 'arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary'
               - Effect: Allow
                 Action:
                   - glue:GetDatabase
@@ -918,7 +1107,7 @@ Resources:
                   - ec2:CreateNetworkInterface
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DeleteNetworkInterface
-                Resource: '*'
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
         - PolicyName: Logs
           PolicyDocument:
             Version: '2012-10-17'
