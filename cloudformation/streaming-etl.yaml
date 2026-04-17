@@ -46,7 +46,6 @@ Parameters:
 
   RDSPassword:
     Type: String
-    Default: Amazon123
     NoEcho: true
     MinLength: 8
     MaxLength: 41
@@ -54,7 +53,6 @@ Parameters:
 
   MSKPassword:
     Type: String
-    Default: KafkaAdmin1234
     NoEcho: true
     MinLength: 8
     MaxLength: 41
@@ -1245,6 +1243,7 @@ Resources:
     Properties:
       TopicName: !Sub '${EnvironmentName}-dq-alerts'
       DisplayName: !Sub '${EnvironmentName} DQ Failure Alerts'
+      KmsMasterKeyId: !GetAtt MSKSecretKMSKey.Arn
 
   # ==========================================================================
   # Glue
@@ -1321,6 +1320,7 @@ Resources:
       Role: !GetAtt SQLRunnerRole.Arn
       Timeout: 60
       MemorySize: 256
+      ReservedConcurrentExecutions: 5
       Code:
         ZipFile: |
           import json
@@ -1405,6 +1405,7 @@ Resources:
       Role: !GetAtt KafkaAdminRole.Arn
       Timeout: 300
       MemorySize: 256
+      ReservedConcurrentExecutions: 3
       Code:
         ZipFile: |
           import json
@@ -1559,6 +1560,7 @@ Resources:
       Role: !GetAtt AthenaCreatorRole.Arn
       Timeout: 300
       MemorySize: 256
+      ReservedConcurrentExecutions: 3
       Code:
         ZipFile: |
           import boto3
@@ -1728,6 +1730,7 @@ Resources:
       Role: !GetAtt DataGeneratorRole.Arn
       Timeout: 900
       MemorySize: 512
+      ReservedConcurrentExecutions: 5
       Code:
         ZipFile: |
           import json

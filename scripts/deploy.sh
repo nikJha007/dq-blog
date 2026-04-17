@@ -23,6 +23,10 @@ set -euo pipefail
 STACK_NAME="${STACK_NAME:-dq-etl}"
 REGION="${AWS_REGION:-us-east-1}"
 USE_CASE=""
+RDS_PASSWORD="${RDS_PASSWORD:-}"
+MSK_PASSWORD="${MSK_PASSWORD:-}"
+USE_PREVIOUS_RDS=false
+USE_PREVIOUS_MSK=false
 START_GLUE=false
 SKIP_STACK=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,8 +65,14 @@ show_help() {
     echo "    -h, --help          Show this help message"
     echo "    -s, --stack-name    CloudFormation stack name (default: dq-etl)"
     echo "    -r, --region        AWS region (default: us-east-1)"
+    echo "    --rds-password      RDS PostgreSQL password (prompted if not provided)"
+    echo "    --msk-password      MSK SASL/SCRAM password (prompted if not provided)"
     echo "    --start-glue        Start Glue streaming job after deployment"
     echo "    --skip-stack        Skip CloudFormation deployment"
+    echo ""
+    echo -e "${BOLD}ENVIRONMENT VARIABLES:${NC}"
+    echo "    RDS_PASSWORD        RDS PostgreSQL password (alternative to --rds-password)"
+    echo "    MSK_PASSWORD        MSK SASL/SCRAM password (alternative to --msk-password)"
     echo ""
     echo -e "${BOLD}EXAMPLES:${NC}"
     echo "    ./deploy.sh --use-case vehicle-telemetry"
@@ -82,6 +92,8 @@ parse_args() {
             -s|--stack-name) STACK_NAME="$2"; shift 2 ;;
             -u|--use-case) USE_CASE="$2"; shift 2 ;;
             -r|--region) REGION="$2"; shift 2 ;;
+            --rds-password) RDS_PASSWORD="$2"; shift 2 ;;
+            --msk-password) MSK_PASSWORD="$2"; shift 2 ;;
             --start-glue) START_GLUE=true; shift ;;
             --skip-stack) SKIP_STACK=true; shift ;;
             *) log_error "Unknown option: $1"; exit 1 ;;
@@ -117,6 +129,51 @@ validate_use_case() {
         log_info "Generator: examples/${USE_CASE}/scripts/data_generator.py"
     else
         log_warn "No data generator found for use case: ${USE_CASE}"
+    fi
+}
+
+# =============================================================================
+# Prompt for Passwords (if not provided via CLI or env vars)
+# =============================================================================
+prompt_passwords() {
+    if [ "$SKIP_STACK" = true ]; then
+        return 0
+    fi
+
+    # For stack updates, use previous values if passwords not provided
+    local stack_status
+    stack_status=$(stack_exists 2>/dev/null || echo "DOES_NOT_EXIST")
+
+    if [[ "$stack_status" != "DOES_NOT_EXIST" ]] && [[ "$stack_status" != *"ROLLBACK"* ]]; then
+        # Existing stack — use previous values unless explicitly provided
+        if [ -z "$RDS_PASSWORD" ]; then
+            USE_PREVIOUS_RDS=true
+        fi
+        if [ -z "$MSK_PASSWORD" ]; then
+            USE_PREVIOUS_MSK=true
+        fi
+        return 0
+    fi
+
+    # New stack — passwords are required
+    if [ -z "$RDS_PASSWORD" ]; then
+        echo -n "Enter RDS PostgreSQL password (min 8 chars): "
+        read -rs RDS_PASSWORD
+        echo ""
+        if [ ${#RDS_PASSWORD} -lt 8 ]; then
+            log_error "RDS password must be at least 8 characters"
+            exit 1
+        fi
+    fi
+
+    if [ -z "$MSK_PASSWORD" ]; then
+        echo -n "Enter MSK SASL/SCRAM password (min 8 chars): "
+        read -rs MSK_PASSWORD
+        echo ""
+        if [ ${#MSK_PASSWORD} -lt 8 ]; then
+            log_error "MSK password must be at least 8 characters"
+            exit 1
+        fi
     fi
 }
 
@@ -282,9 +339,22 @@ params = [
     {'ParameterKey': 'CreateDMSVPCRole', 'ParameterValue': sys.argv[2]},
     {'ParameterKey': 'DMSTableMappings', 'ParameterValue': sys.argv[3]},
 ]
+rds_pw = sys.argv[5]
+msk_pw = sys.argv[6]
+use_prev_rds = sys.argv[7]
+use_prev_msk = sys.argv[8]
+if use_prev_rds == 'true':
+    params.append({'ParameterKey': 'RDSPassword', 'UsePreviousValue': True})
+elif rds_pw:
+    params.append({'ParameterKey': 'RDSPassword', 'ParameterValue': rds_pw})
+if use_prev_msk == 'true':
+    params.append({'ParameterKey': 'MSKPassword', 'UsePreviousValue': True})
+elif msk_pw:
+    params.append({'ParameterKey': 'MSKPassword', 'ParameterValue': msk_pw})
 with open(sys.argv[4], 'w') as f:
     json.dump(params, f)
-" "$STACK_NAME" "$create_dms_vpc_role" "$dms_mappings" "$params_file"
+" "$STACK_NAME" "$create_dms_vpc_role" "$dms_mappings" "$params_file" \
+  "$RDS_PASSWORD" "$MSK_PASSWORD" "${USE_PREVIOUS_RDS:-false}" "${USE_PREVIOUS_MSK:-false}"
 
     stack_status=$(stack_exists || echo "DOES_NOT_EXIST")
 
@@ -823,6 +893,9 @@ main() {
     echo ""
 
     check_prerequisites
+    echo ""
+
+    prompt_passwords
     echo ""
 
     validate_config
