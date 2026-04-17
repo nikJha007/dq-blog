@@ -964,6 +964,11 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt MSKSecretKMSKey.Arn
 
   KafkaAdminRole:
     Type: AWS::IAM::Role
@@ -1137,6 +1142,11 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt MSKSecretKMSKey.Arn
 
   # ==========================================================================
   # DMS
